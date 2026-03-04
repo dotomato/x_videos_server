@@ -238,24 +238,96 @@ def get_home_timeline(count: int = 5, cursor: str = None) -> list[dict]:
             print(resp.text[:500])
             return []
 
+        tweets, _ = parse_timeline(resp.json())
+        return tweets
+
+
+def get_home_timeline_with_cursor(count: int = 20, cursor: str = None) -> tuple[list[dict], str | None]:
+    """返回 (tweets, next_cursor)，供分页加载使用"""
+    cookies = {"auth_token": AUTH_TOKEN, "ct0": CT0}
+
+    with httpx.Client(cookies=cookies, headers=make_headers(), timeout=30) as client:
+        query_id = get_query_id()
+
+        variables = {
+            "count":                  count,
+            "includePromotedContent": True,
+            "latestControlAvailable": True,
+            "requestContext":         "launch",
+            "withCommunity":          True,
+            "seenTweetIds":           [],
+        }
+        if cursor:
+            variables["cursor"] = cursor
+
+        features = {
+            "rweb_tipjar_consumption_enabled":                                         True,
+            "responsive_web_graphql_exclude_directive_enabled":                        True,
+            "verified_phone_label_enabled":                                            False,
+            "creator_subscriptions_tweet_preview_enabled":                             True,
+            "responsive_web_graphql_timeline_navigation_enabled":                      True,
+            "responsive_web_graphql_skip_user_profile_image_extensions_enabled":       False,
+            "communities_web_enable_tweet_community_results_fetch":                    True,
+            "c9s_tweet_anatomy_moderator_badge_enabled":                               True,
+            "articles_preview_enabled":                                                True,
+            "responsive_web_edit_tweet_api_enabled":                                   True,
+            "graphql_is_translatable_rweb_tweet_is_translatable_enabled":              True,
+            "view_counts_everywhere_api_enabled":                                      True,
+            "longform_notetweets_consumption_enabled":                                 True,
+            "responsive_web_twitter_article_tweet_consumption_enabled":                True,
+            "tweet_awards_web_tipping_enabled":                                        False,
+            "creator_subscriptions_quote_tweet_preview_enabled":                       False,
+            "freedom_of_speech_not_reach_fetch_enabled":                               True,
+            "standardized_nudges_misinfo":                                             True,
+            "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+            "rweb_video_timestamps_enabled":                                           True,
+            "longform_notetweets_rich_text_read_enabled":                              True,
+            "longform_notetweets_inline_media_enabled":                                True,
+            "responsive_web_enhance_cards_enabled":                                    False,
+        }
+
+        url = f"https://x.com/i/api/graphql/{query_id}/HomeTimeline"
+        payload = {
+            "queryId":   query_id,
+            "variables": variables,
+            "features":  features,
+        }
+
+        resp = client.post(url, json=payload)
+
+        if resp.status_code in (400, 403):
+            query_id = fetch_query_id(client)
+            url = f"https://x.com/i/api/graphql/{query_id}/HomeTimeline"
+            payload["queryId"] = query_id
+            resp = client.post(url, json=payload)
+
+        if resp.status_code != 200:
+            return [], None
+
         return parse_timeline(resp.json())
 
 
 # ─── 解析返回数据 ─────────────────────────────────────────────────────────────
-def parse_timeline(data: dict) -> list[dict]:
+def parse_timeline(data: dict) -> tuple[list[dict], str | None]:
+    """解析时间线数据，返回 (tweets, bottom_cursor)"""
     tweets = []
+    bottom_cursor = None
     try:
         instructions = data["data"]["home"]["home_timeline_urt"]["instructions"]
     except KeyError:
         print("解析失败，原始响应:")
         print(json.dumps(data, indent=2, ensure_ascii=False)[:1000])
-        return []
+        return [], None
 
     for instruction in instructions:
         if instruction.get("type") != "TimelineAddEntries":
             continue
         for entry in instruction.get("entries", []):
             content      = entry.get("content", {})
+            # 提取底部 cursor
+            if content.get("entryType") == "TimelineTimelineCursor" and content.get("cursorType") == "Bottom":
+                bottom_cursor = content.get("value")
+                continue
             item_content = content.get("itemContent", {})
             if item_content.get("itemType") != "TimelineTweet":
                 continue
@@ -298,7 +370,7 @@ def parse_timeline(data: dict) -> list[dict]:
                 "videos":     videos,
             })
 
-    return tweets
+    return tweets, bottom_cursor
 
 
 # ─── 展示推文 ─────────────────────────────────────────────────────────────────

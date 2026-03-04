@@ -436,3 +436,10 @@ button:active { background: #1677b3; }
   line-height: 1;
   white-space: nowrap;
 }
+
+.load-status {
+  text-align: center;
+  padding: 1.2rem;
+  color: #666;
+  font-size: 0.85rem;
+}

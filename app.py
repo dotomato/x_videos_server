@@ -17,7 +17,7 @@ from flask import (
     session, redirect, url_for, request, Response, jsonify
 )
 import cv2
-from x_timeline import get_home_timeline, DOWNLOAD_DIR
+from x_timeline import get_home_timeline, get_home_timeline_with_cursor, DOWNLOAD_DIR
 
 # ─── 日志 ──────────────────────────────────────────────────────────────────────
 
@@ -250,8 +250,20 @@ def _do_download(task_id: str, user: str, tweet_id: str, video_url: str, video_i
 @app.route("/timeline")
 @login_required
 def timeline():
-    tweets = get_home_timeline(count=20)
-    return render_template("timeline.html", tweets=tweets)
+    tweets, next_cursor = get_home_timeline_with_cursor(count=20)
+    return render_template("timeline.html", tweets=tweets, next_cursor=next_cursor or "")
+
+
+@app.route("/timeline/more", methods=["POST"])
+@login_required
+def timeline_more():
+    data = request.get_json(force=True)
+    cursor = data.get("cursor", "")
+    if not cursor:
+        return jsonify({"error": "missing cursor"}), 400
+    tweets, next_cursor = get_home_timeline_with_cursor(count=20, cursor=cursor)
+    # 将 tweets 序列化为前端可用的格式
+    return jsonify({"tweets": tweets, "next_cursor": next_cursor or ""})
 
 
 @app.route("/timeline/download", methods=["POST"])

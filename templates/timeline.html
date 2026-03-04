@@ -12,7 +12,7 @@
 <header>
   <a class="back-btn" href="/">← 返回首页</a>
   <h1><span>X</span> 时间线</h1>
-  <span class="count">共 {{ tweets|length }} 条（{{ tweets|selectattr('videos')|list|length }} 条含视频）</span>
+  <span class="count" id="tweet-count">共 {{ tweets|length }} 条（{{ tweets|selectattr('videos')|list|length }} 条含视频）</span>
   <a class="back-btn" href="/timeline" id="refresh-btn">刷新</a>
   <a class="logout" href="/logout">退出登录</a>
 </header>
@@ -99,14 +99,24 @@
   {% else %}
   <p class="empty">未获取到推文，请检查凭证配置后刷新。</p>
   {% endif %}
+
+  <!-- 无限滚动 sentinel -->
+  <div id="load-sentinel" style="height:1px"></div>
+  <div id="load-status" class="load-status"></div>
 </main>
 
 <script>
-document.querySelectorAll('.dl-btn').forEach(btn => {
+// ─── 初始 cursor（服务端注入）
+let nextCursor = {{ next_cursor | tojson }};
+let loading = false;
+let exhausted = false;
+
+// ─── 下载按钮逻辑（绑定到新增行也能生效）
+function bindDlBtn(btn) {
   btn.addEventListener('click', async () => {
-    const tweetId   = btn.dataset.tweetId;
-    const user      = btn.dataset.user;
-    const videoUrl  = btn.dataset.videoUrl;
+    const tweetId    = btn.dataset.tweetId;
+    const user       = btn.dataset.user;
+    const videoUrl   = btn.dataset.videoUrl;
     const videoIndex = parseInt(btn.dataset.videoIndex, 10);
     const rk = `${user}__${tweetId}__${videoIndex}`;
 
@@ -118,16 +128,11 @@ document.querySelectorAll('.dl-btn').forEach(btn => {
       const res = await fetch('/timeline/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tweet_id: tweetId,
-          user: user,
-          video_url: videoUrl,
-          video_index: videoIndex,
-        }),
+        body: JSON.stringify({ tweet_id: tweetId, user, video_url: videoUrl, video_index: videoIndex }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       ({ task_id: taskId } = await res.json());
-    } catch (err) {
+    } catch {
       btn.disabled = false;
       btn.textContent = '重试';
       return;
@@ -142,49 +147,36 @@ document.querySelectorAll('.dl-btn').forEach(btn => {
     const es = new EventSource(`/timeline/progress/${taskId}`);
     es.onmessage = e => {
       const d = JSON.parse(e.data);
-
       if (d.total > 0) {
         const pct = Math.min(100, Math.round(d.progress / d.total * 100));
         bar.style.width = pct + '%';
         ptxt.textContent = pct + '%';
       }
-
       if (d.status === 'done') {
-        bar.style.width = '100%';
-        bar.classList.add('done');
-        ptxt.textContent = '完成';
-        btn.textContent = '已下载';
-        es.close();
+        bar.style.width = '100%'; bar.classList.add('done');
+        ptxt.textContent = '完成'; btn.textContent = '已下载'; es.close();
       } else if (d.status === 'skipped') {
-        bar.style.width = '100%';
-        bar.classList.add('done');
-        ptxt.textContent = '已存在';
-        btn.textContent = '已存在';
-        es.close();
+        bar.style.width = '100%'; bar.classList.add('done');
+        ptxt.textContent = '已存在'; btn.textContent = '已存在'; es.close();
       } else if (d.status === 'error') {
-        bar.classList.add('error');
-        ptxt.textContent = '失败';
-        btn.disabled = false;
-        btn.textContent = '重试';
-        es.close();
+        bar.classList.add('error'); ptxt.textContent = '失败';
+        btn.disabled = false; btn.textContent = '重试'; es.close();
       }
     };
-
     es.onerror = () => {
       es.close();
-      // 若进度条还没变绿/红则标记失败
       if (!bar.classList.contains('done') && !bar.classList.contains('error')) {
-        bar.classList.add('error');
-        ptxt.textContent = '连接断开';
-        btn.disabled = false;
-        btn.textContent = '重试';
+        bar.classList.add('error'); ptxt.textContent = '连接断开';
+        btn.disabled = false; btn.textContent = '重试';
       }
     };
   });
-});
+}
 
-// Thumbnail hover preview — follow mouse
-document.querySelectorAll('.tl-thumb-wrap').forEach(wrap => {
+document.querySelectorAll('.dl-btn').forEach(bindDlBtn);
+
+// ─── Thumbnail hover preview
+function bindThumbPreview(wrap) {
   const preview = wrap.querySelector('.tl-thumb-preview');
   wrap.addEventListener('mousemove', e => {
     const GAP = 16, pw = 320;
@@ -198,7 +190,132 @@ document.querySelectorAll('.tl-thumb-wrap').forEach(wrap => {
     preview.style.left = x + 'px';
     preview.style.top  = y + 'px';
   });
-});
+}
+
+document.querySelectorAll('.tl-thumb-wrap').forEach(bindThumbPreview);
+
+// ─── 无限滚动加载
+const tbody       = document.querySelector('.tl-table tbody');
+const sentinel    = document.getElementById('load-sentinel');
+const loadStatus  = document.getElementById('load-status');
+const countEl     = document.getElementById('tweet-count');
+
+function updateCount() {
+  const rows = tbody ? tbody.querySelectorAll('tr').length : 0;
+  const withVideo = tbody ? tbody.querySelectorAll('.dl-btn').length > 0
+    ? [...tbody.querySelectorAll('tr')].filter(r => r.querySelector('.dl-btn')).length : 0 : 0;
+  if (countEl) countEl.textContent = `共 ${rows} 条`;
+}
+
+function buildRow(t, index) {
+  const v0 = t.videos && t.videos[0];
+  const thumbHtml = v0 && v0.thumb
+    ? `<div class="tl-thumb-wrap">
+        <img class="tl-thumb" src="${v0.thumb}" alt="" loading="lazy">
+        <img class="tl-thumb-preview" src="${v0.thumb}" alt="">
+       </div>`
+    : `<span class="no-video">—</span>`;
+
+  let metaHtml = '—';
+  if (v0) {
+    const durS = Math.floor((v0.duration_ms || 0) / 1000);
+    if (v0.variants && v0.variants[0] && v0.variants[0].bitrate) {
+      const sizeMb = ((v0.variants[0].bitrate / 8) * (v0.duration_ms / 1000) / 1024 / 1024).toFixed(1);
+      metaHtml = `<span class="meta-dur">${durS}s</span><span class="meta-size">~${sizeMb} MB</span>`;
+    } else {
+      metaHtml = `<span class="meta-dur">${durS}s</span>`;
+    }
+  }
+
+  let opsHtml = '<span class="no-video">—</span>';
+  if (t.videos && t.videos.length > 0) {
+    opsHtml = t.videos.map((v, vi) => {
+      if (!v.variants || !v.variants[0]) return '';
+      const rk = `${t.user}__${t.id}__${vi}`;
+      const label = t.videos.length > 1 ? `视频${vi + 1}` : '下载';
+      return `<div class="dl-item">
+        <button class="dl-btn" id="btn-${rk}"
+          data-tweet-id="${t.id}" data-user="${t.user}"
+          data-video-url="${v.variants[0].url}" data-video-index="${vi}">${label}</button>
+        <div class="prog-wrap" id="prog-${rk}" hidden>
+          <div class="prog-track"><div class="prog-bar" id="bar-${rk}"></div></div>
+          <span class="prog-text" id="ptxt-${rk}">0%</span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  const snippet = t.text.length > 80 ? t.text.slice(0, 80) + '…' : t.text;
+  const escaped = t.text.replace(/"/g, '&quot;');
+
+  return `<tr>
+    <td class="num">${index}</td>
+    <td class="author-cell">
+      <a href="${t.url}" target="_blank" rel="noopener">@${t.user}</a>
+      <br><small>${t.name}</small>
+    </td>
+    <td class="snippet" title="${escaped}">${snippet}</td>
+    <td class="center thumb-cell">${thumbHtml}</td>
+    <td class="center meta-cell">${metaHtml}</td>
+    <td class="center ops-cell">${opsHtml}</td>
+  </tr>`;
+}
+
+async function loadMore() {
+  if (loading || exhausted || !nextCursor || !tbody) return;
+  loading = true;
+  loadStatus.textContent = '加载中…';
+
+  try {
+    const res = await fetch('/timeline/more', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cursor: nextCursor }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const tweets = data.tweets || [];
+    nextCursor = data.next_cursor || '';
+
+    if (tweets.length === 0) {
+      exhausted = true;
+      loadStatus.textContent = '没有更多推文了';
+      observer.disconnect();
+      return;
+    }
+
+    const startIndex = tbody.querySelectorAll('tr').length + 1;
+    tweets.forEach((t, i) => {
+      tbody.insertAdjacentHTML('beforeend', buildRow(t, startIndex + i));
+    });
+
+    // 绑定新行的事件
+    const newRows = [...tbody.querySelectorAll('tr')].slice(startIndex - 1);
+    newRows.forEach(row => {
+      row.querySelectorAll('.dl-btn').forEach(bindDlBtn);
+      row.querySelectorAll('.tl-thumb-wrap').forEach(bindThumbPreview);
+    });
+
+    updateCount();
+    loadStatus.textContent = '';
+
+    if (!nextCursor) {
+      exhausted = true;
+      loadStatus.textContent = '没有更多推文了';
+      observer.disconnect();
+    }
+  } catch (err) {
+    loadStatus.textContent = '加载失败，滚动重试';
+  } finally {
+    loading = false;
+  }
+}
+
+const observer = new IntersectionObserver(entries => {
+  if (entries[0].isIntersecting) loadMore();
+}, { rootMargin: '200px' });
+
+if (sentinel && nextCursor) observer.observe(sentinel);
 </script>
 
 </body>

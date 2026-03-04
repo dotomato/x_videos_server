@@ -151,6 +151,11 @@ def get_author_videos(author: str) -> list[dict]:
 
 # ─── 路由 ─────────────────────────────────────────────────────────────────────
 
+@app.route("/favicon.ico")
+def favicon():
+    return send_from_directory(BASE_DIR / "static", "favicon.ico", mimetype="image/x-icon")
+
+
 @app.route("/")
 @login_required
 def index():

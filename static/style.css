@@ -316,6 +316,8 @@ button:active { background: #1677b3; }
 }
 .tl-table .author-cell a:hover { text-decoration: underline; }
 .tl-table .author-cell small { color: #666; font-size: 0.78rem; }
+.tl-table .user-tl-link small { color: #555; }
+.tl-table .user-tl-link:hover small { color: #1d9bf0; text-decoration: underline; }
 
 .tl-table .snippet {
   max-width: 420px;

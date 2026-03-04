@@ -460,6 +460,207 @@ def print_tweets(tweets: list[dict], download: bool = False):
                     download_video(t, v, vi)
 
 
+# ─── 用户时间线 ───────────────────────────────────────────────────────────────
+
+# 备用 queryId（从 X JS bundle 中提取，会过期，届时自动刷新）
+FALLBACK_USER_TWEETS_QUERY_ID = "V1ze5q3ijDS1VeLwLY0m7g"
+_USER_QUERY_ID_CACHE_KEY = "user_tweets_query_id"
+
+
+def get_user_tweets_query_id() -> str:
+    cache = _load_cache()
+    return cache.get(_USER_QUERY_ID_CACHE_KEY) or FALLBACK_USER_TWEETS_QUERY_ID
+
+
+def _fetch_user_tweets_query_id(client: httpx.Client) -> str:
+    """从 X JS bundle 中提取 UserTweets queryId 并缓存。"""
+    print("UserTweets queryId 可能已失效，正在重新获取 ...")
+    with httpx.Client(headers=BROWSER_HEADERS, cookies=client.cookies, timeout=30) as html_client:
+        resp = html_client.get("https://x.com/home", follow_redirects=True)
+        main_js_urls = re.findall(r'src="(https://abs\.twimg\.com/responsive-web/client-web/main\.[^"]+\.js)"', resp.text)
+        all_js_urls  = re.findall(r'src="(https://abs\.twimg\.com[^"]+\.js)"', resp.text)
+        search_urls  = main_js_urls + [u for u in all_js_urls if u not in main_js_urls]
+
+        for url in search_urls[:6]:
+            js_resp = html_client.get(url)
+            match = re.search(r'queryId:"([^"]+)",operationName:"UserTweets"', js_resp.text)
+            if match:
+                qid = match.group(1)
+                # 合并写入缓存（保留原有 HomeTimeline queryId）
+                cache = _load_cache()
+                cache[_USER_QUERY_ID_CACHE_KEY] = qid
+                CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+                print(f"找到新 UserTweets queryId: {qid}（已缓存）")
+                return qid
+
+    print("未找到 UserTweets queryId，使用已知备用值")
+    return FALLBACK_USER_TWEETS_QUERY_ID
+
+
+def get_user_id(screen_name: str) -> str | None:
+    """通过 X GraphQL UserByScreenName 接口获取用户数字 ID。"""
+    cookies = {"auth_token": AUTH_TOKEN, "ct0": CT0}
+    # UserByScreenName queryId 较稳定，直接用已知值
+    query_id = "xmU6X_CKVnQ5lSrCbAmJsg"
+    url = f"https://x.com/i/api/graphql/{query_id}/UserByScreenName"
+    params = {
+        "variables": json.dumps({
+            "screen_name": screen_name,
+            "withSafetyModeUserFields": True,
+        }),
+        "features": json.dumps({
+            "hidden_profile_subscriptions_enabled": True,
+            "rweb_tipjar_consumption_enabled": True,
+            "responsive_web_graphql_exclude_directive_enabled": True,
+            "verified_phone_label_enabled": False,
+            "subscriptions_verification_info_is_identity_verified_enabled": True,
+            "subscriptions_verification_info_verified_since_enabled": True,
+            "highlights_tweets_tab_ui_enabled": True,
+            "responsive_web_twitter_article_notes_tab_enabled": False,
+            "creator_subscriptions_tweet_preview_enabled": True,
+            "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+            "responsive_web_graphql_timeline_navigation_enabled": True,
+        }),
+    }
+    with httpx.Client(cookies=cookies, headers=make_headers(), timeout=15) as client:
+        try:
+            resp = client.get(url, params=params)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["data"]["user"]["result"]["rest_id"]
+        except Exception as e:
+            print(f"获取用户 ID 失败: {e}")
+    return None
+
+
+def parse_user_tweets(data: dict) -> tuple[list[dict], str | None]:
+    """解析 UserTweets GraphQL 响应，返回 (tweets, bottom_cursor)。"""
+    tweets = []
+    bottom_cursor = None
+    try:
+        instructions = (
+            data["data"]["user"]["result"]["timeline_v2"]["timeline"]["instructions"]
+        )
+    except KeyError:
+        return [], None
+
+    for instruction in instructions:
+        if instruction.get("type") != "TimelineAddEntries":
+            continue
+        for entry in instruction.get("entries", []):
+            content = entry.get("content", {})
+            # 提取底部 cursor
+            if content.get("entryType") == "TimelineTimelineCursor" and content.get("cursorType") == "Bottom":
+                bottom_cursor = content.get("value")
+                continue
+            item_content = content.get("itemContent", {})
+            if item_content.get("itemType") != "TimelineTweet":
+                continue
+            tweet_result = item_content.get("tweet_results", {}).get("result", {})
+            if tweet_result.get("__typename") == "TweetWithVisibilityResults":
+                tweet_result = tweet_result.get("tweet", {})
+            if tweet_result.get("__typename") != "Tweet":
+                continue
+
+            legacy      = tweet_result.get("legacy", {})
+            user_result = tweet_result.get("core", {}).get("user_results", {}).get("result", {})
+            user_core   = user_result.get("core", {})
+            user_legacy = user_result.get("legacy", {})
+            user = {
+                "screen_name": user_core.get("screen_name") or user_legacy.get("screen_name", ""),
+                "name":        user_core.get("name")        or user_legacy.get("name", ""),
+            }
+
+            created_at = legacy.get("created_at", "")
+            try:
+                dt = datetime.strptime(created_at, "%a %b %d %H:%M:%S +0000 %Y")
+                dt = dt.replace(tzinfo=timezone.utc)
+                created_at = dt.strftime("%Y-%m-%d %H:%M UTC")
+            except Exception:
+                pass
+
+            videos = extract_videos(legacy)
+            tweets.append({
+                "id":         legacy.get("id_str", ""),
+                "user":       user["screen_name"],
+                "name":       user["name"],
+                "text":       legacy.get("full_text", legacy.get("text", "")),
+                "created_at": created_at,
+                "likes":      legacy.get("favorite_count", 0),
+                "retweets":   legacy.get("retweet_count", 0),
+                "replies":    legacy.get("reply_count", 0),
+                "url":        f"https://x.com/{user['screen_name']}/status/{legacy.get('id_str','')}",
+                "videos":     videos,
+            })
+
+    return tweets, bottom_cursor
+
+
+def get_user_timeline_with_cursor(user_id: str, count: int = 20, cursor: str = None) -> tuple[list[dict], str | None]:
+    """获取指定用户的推文时间线，返回 (tweets, next_cursor)。"""
+    cookies = {"auth_token": AUTH_TOKEN, "ct0": CT0}
+
+    with httpx.Client(cookies=cookies, headers=make_headers(), timeout=30) as client:
+        query_id = get_user_tweets_query_id()
+
+        variables = {
+            "userId":                 user_id,
+            "count":                  count,
+            "includePromotedContent": True,
+            "withQuickPromoteEligibilityTweetFields": True,
+            "withVoice":              True,
+            "withV2Timeline":         True,
+        }
+        if cursor:
+            variables["cursor"] = cursor
+
+        features = {
+            "rweb_tipjar_consumption_enabled":                                         True,
+            "responsive_web_graphql_exclude_directive_enabled":                        True,
+            "verified_phone_label_enabled":                                            False,
+            "creator_subscriptions_tweet_preview_enabled":                             True,
+            "responsive_web_graphql_timeline_navigation_enabled":                      True,
+            "responsive_web_graphql_skip_user_profile_image_extensions_enabled":       False,
+            "communities_web_enable_tweet_community_results_fetch":                    True,
+            "c9s_tweet_anatomy_moderator_badge_enabled":                               True,
+            "articles_preview_enabled":                                                True,
+            "responsive_web_edit_tweet_api_enabled":                                   True,
+            "graphql_is_translatable_rweb_tweet_is_translatable_enabled":              True,
+            "view_counts_everywhere_api_enabled":                                      True,
+            "longform_notetweets_consumption_enabled":                                 True,
+            "responsive_web_twitter_article_tweet_consumption_enabled":                True,
+            "tweet_awards_web_tipping_enabled":                                        False,
+            "creator_subscriptions_quote_tweet_preview_enabled":                       False,
+            "freedom_of_speech_not_reach_fetch_enabled":                               True,
+            "standardized_nudges_misinfo":                                             True,
+            "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+            "rweb_video_timestamps_enabled":                                           True,
+            "longform_notetweets_rich_text_read_enabled":                              True,
+            "longform_notetweets_inline_media_enabled":                                True,
+            "responsive_web_enhance_cards_enabled":                                    False,
+        }
+
+        url = f"https://x.com/i/api/graphql/{query_id}/UserTweets"
+        params = {
+            "variables": json.dumps(variables),
+            "features":  json.dumps(features),
+        }
+
+        resp = client.get(url, params=params)
+
+        if resp.status_code in (400, 403):
+            query_id = _fetch_user_tweets_query_id(client)
+            params["variables"] = json.dumps({**variables})
+            url = f"https://x.com/i/api/graphql/{query_id}/UserTweets"
+            resp = client.get(url, params=params)
+
+        if resp.status_code != 200:
+            print(f"UserTweets 请求失败: HTTP {resp.status_code}")
+            return [], None
+
+        return parse_user_tweets(resp.json())
+
+
 # ─── 入口 ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     args     = sys.argv[1:]

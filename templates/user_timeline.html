@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>时间线 — X Videos</title>
+  <title>@{{ screen_name }} — X Videos</title>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
 </head>
 <body>
 
 <header>
-  <a class="back-btn" href="/">← 返回首页</a>
-  <h1><span>X</span> 时间线</h1>
+  <a class="back-btn" href="javascript:history.back()">← 返回</a>
+  <h1><span>@{{ screen_name }}</span> 时间线</h1>
   <span class="count" id="tweet-count">共 {{ tweets|length }} 条（{{ tweets|selectattr('videos')|list|length }} 条含视频）</span>
-  <a class="back-btn" href="/timeline" id="refresh-btn">刷新</a>
+  <a class="back-btn" href="/user/{{ screen_name }}" id="refresh-btn">刷新</a>
   <a class="logout" href="/logout">退出登录</a>
 </header>
 
@@ -37,7 +37,7 @@
           <td class="num">{{ loop.index }}</td>
           <td class="author-cell">
             <a href="{{ t.url }}" target="_blank" rel="noopener">@{{ t.user }}</a>
-            <br><a class="user-tl-link" href="/user/{{ t.user }}" target="_blank"><small>{{ t.name }}</small></a>
+            <br><small>{{ t.name }}</small>
           </td>
           <td class="snippet" title="{{ t.text }}">{{ t.text[:80] }}{% if t.text|length > 80 %}…{% endif %}</td>
           <td class="center thumb-cell">
@@ -118,12 +118,12 @@
 </main>
 
 <script>
-// ─── 初始 cursor（服务端注入）
+const MORE_URL = '/user/{{ screen_name }}/more';
+
 let nextCursor = {{ next_cursor | tojson }};
 let loading = false;
 let exhausted = false;
 
-// ─── 下载按钮逻辑（绑定到新增行也能生效）
 function bindDlBtn(btn) {
   btn.addEventListener('click', async () => {
     const tweetId    = btn.dataset.tweetId;
@@ -187,7 +187,6 @@ function bindDlBtn(btn) {
 
 document.querySelectorAll('.dl-btn').forEach(bindDlBtn);
 
-// ─── Thumbnail hover preview
 function bindThumbPreview(wrap) {
   const preview = wrap.querySelector('.tl-thumb-preview');
   wrap.addEventListener('mousemove', e => {
@@ -206,16 +205,13 @@ function bindThumbPreview(wrap) {
 
 document.querySelectorAll('.tl-thumb-wrap').forEach(bindThumbPreview);
 
-// ─── 无限滚动加载
-const tbody       = document.querySelector('.tl-table tbody');
-const sentinel    = document.getElementById('load-sentinel');
-const loadStatus  = document.getElementById('load-status');
-const countEl     = document.getElementById('tweet-count');
+const tbody      = document.querySelector('.tl-table tbody');
+const sentinel   = document.getElementById('load-sentinel');
+const loadStatus = document.getElementById('load-status');
+const countEl    = document.getElementById('tweet-count');
 
 function updateCount() {
   const rows = tbody ? tbody.querySelectorAll('tr').length : 0;
-  const withVideo = tbody ? tbody.querySelectorAll('.dl-btn').length > 0
-    ? [...tbody.querySelectorAll('tr')].filter(r => r.querySelector('.dl-btn')).length : 0 : 0;
   if (countEl) countEl.textContent = `共 ${rows} 条`;
 }
 
@@ -278,7 +274,7 @@ function buildRow(t, index) {
     <td class="num">${index}</td>
     <td class="author-cell">
       <a href="${t.url}" target="_blank" rel="noopener">@${t.user}</a>
-      <br><a class="user-tl-link" href="/user/${t.user}" target="_blank"><small>${t.name}</small></a>
+      <br><small>${t.name}</small>
     </td>
     <td class="snippet" title="${escaped}">${snippet}</td>
     <td class="center thumb-cell">${thumbHtml}</td>
@@ -293,7 +289,7 @@ async function loadMore() {
   loadStatus.textContent = '加载中…';
 
   try {
-    const res = await fetch('/timeline/more', {
+    const res = await fetch(MORE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cursor: nextCursor }),
@@ -315,7 +311,6 @@ async function loadMore() {
       tbody.insertAdjacentHTML('beforeend', buildRow(t, startIndex + i));
     });
 
-    // 绑定新行的事件
     const newRows = [...tbody.querySelectorAll('tr')].slice(startIndex - 1);
     newRows.forEach(row => {
       row.querySelectorAll('.dl-btn').forEach(bindDlBtn);

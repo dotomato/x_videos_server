@@ -17,7 +17,7 @@ from flask import (
     session, redirect, url_for, request, Response, jsonify
 )
 import cv2
-from x_timeline import get_home_timeline, get_home_timeline_with_cursor, DOWNLOAD_DIR
+from x_timeline import get_home_timeline, get_home_timeline_with_cursor, get_user_id, get_user_timeline_with_cursor, DOWNLOAD_DIR
 
 # ─── 日志 ──────────────────────────────────────────────────────────────────────
 
@@ -271,6 +271,47 @@ def timeline_more():
     if not cursor:
         return jsonify({"error": "missing cursor"}), 400
     tweets, next_cursor = get_home_timeline_with_cursor(count=20, cursor=cursor)
+    return jsonify({"tweets": mark_downloaded(tweets), "next_cursor": next_cursor or ""})
+
+
+# ─── 用户时间线路由 ────────────────────────────────────────────────────────────
+
+# 用户 ID 缓存，避免重复请求
+_user_id_cache: dict[str, str] = {}
+
+
+@app.route("/user/<screen_name>")
+@login_required
+def user_timeline(screen_name: str):
+    if screen_name not in _user_id_cache:
+        user_id = get_user_id(screen_name)
+        if not user_id:
+            abort(404)
+        _user_id_cache[screen_name] = user_id
+    user_id = _user_id_cache[screen_name]
+    tweets, next_cursor = get_user_timeline_with_cursor(user_id, count=20)
+    return render_template(
+        "user_timeline.html",
+        screen_name=screen_name,
+        tweets=mark_downloaded(tweets),
+        next_cursor=next_cursor or "",
+    )
+
+
+@app.route("/user/<screen_name>/more", methods=["POST"])
+@login_required
+def user_timeline_more(screen_name: str):
+    if screen_name not in _user_id_cache:
+        user_id = get_user_id(screen_name)
+        if not user_id:
+            return jsonify({"error": "user not found"}), 404
+        _user_id_cache[screen_name] = user_id
+    user_id = _user_id_cache[screen_name]
+    data = request.get_json(force=True)
+    cursor = data.get("cursor", "")
+    if not cursor:
+        return jsonify({"error": "missing cursor"}), 400
+    tweets, next_cursor = get_user_timeline_with_cursor(user_id, count=20, cursor=cursor)
     return jsonify({"tweets": mark_downloaded(tweets), "next_cursor": next_cursor or ""})
 
 

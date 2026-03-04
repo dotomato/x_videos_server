@@ -3,3 +3,5 @@ httpx
 bcrypt
 opencv-python-headless
 wcwidth
+pytest
+pytest-mock

@@ -1,5 +1,5 @@
 flask
 httpx
 bcrypt
-opencv-python
+opencv-python-headless
 wcwidth

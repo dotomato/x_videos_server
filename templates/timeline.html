@@ -36,8 +36,8 @@
         <tr>
           <td class="num">{{ loop.index }}</td>
           <td class="author-cell">
-            <a href="{{ t.url }}" target="_blank" rel="noopener">@{{ t.user }}</a>
-            <br><a class="user-tl-link" href="/user/{{ t.user }}" target="_blank"><small>{{ t.name }}</small></a>
+            <a href="/user/{{ t.user }}" target="_blank">@{{ t.user }}</a>
+            <br><small>{{ t.name }}</small>
           </td>
           <td class="snippet" title="{{ t.text }}">{{ t.text[:80] }}{% if t.text|length > 80 %}…{% endif %}</td>
           <td class="center thumb-cell">
@@ -277,8 +277,8 @@ function buildRow(t, index) {
   return `<tr>
     <td class="num">${index}</td>
     <td class="author-cell">
-      <a href="${t.url}" target="_blank" rel="noopener">@${t.user}</a>
-      <br><a class="user-tl-link" href="/user/${t.user}" target="_blank"><small>${t.name}</small></a>
+      <a href="/user/${t.user}" target="_blank">@${t.user}</a>
+      <br><small>${t.name}</small>
     </td>
     <td class="snippet" title="${escaped}">${snippet}</td>
     <td class="center thumb-cell">${thumbHtml}</td>

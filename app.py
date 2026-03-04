@@ -4,6 +4,7 @@ X Videos - Flask 视频展示网站
 """
 
 import json
+import re
 import time
 import uuid
 import logging
@@ -82,6 +83,27 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+# ─── 路径参数校验 ─────────────────────────────────────────────────────────────
+
+# 只允许字母、数字、下划线、连字符，1-128 个字符
+_SAFE_SEGMENT_RE = re.compile(r'^[A-Za-z0-9_\-]{1,128}$')
+
+
+def _safe_segment(value: str) -> bool:
+    """校验路径段是否安全，防止路径穿越攻击。"""
+    return bool(_SAFE_SEGMENT_RE.match(value))
+
+
+def _safe_filename(value: str) -> bool:
+    """校验文件名（含扩展名）是否安全。
+    允许格式：{stem}.{ext}，stem 只含安全字符，ext 限 mp4/jpg/ico。
+    """
+    if "." not in value:
+        return False
+    stem, _, ext = value.rpartition(".")
+    return _safe_segment(stem) and ext.lower() in ("mp4", "jpg", "ico")
 
 
 # ─── 缩略图 ───────────────────────────────────────────────────────────────────
@@ -167,6 +189,8 @@ def index():
 @app.route("/author/<name>")
 @login_required
 def author(name: str):
+    if not _safe_segment(name):
+        abort(400)
     videos = get_author_videos(name)
     if not videos:
         abort(404)
@@ -176,6 +200,8 @@ def author(name: str):
 @app.route("/play/<author>/<filename>")
 @login_required
 def play(author: str, filename: str):
+    if not _safe_segment(author) or not _safe_filename(filename):
+        abort(400)
     mp4_path = VIDEOS_DIR / author / filename
     if not mp4_path.is_file():
         abort(404)
@@ -190,6 +216,8 @@ def play(author: str, filename: str):
 @app.route("/delete/<author>/<filename>", methods=["POST"])
 @login_required
 def delete_video(author: str, filename: str):
+    if not _safe_segment(author) or not _safe_filename(filename):
+        abort(400)
     mp4_path = VIDEOS_DIR / author / filename
     if not mp4_path.is_file():
         abort(404)
@@ -204,6 +232,8 @@ def delete_video(author: str, filename: str):
 @app.route("/videos/<author>/<filename>")
 @login_required
 def serve_video(author: str, filename: str):
+    if not _safe_segment(author) or not _safe_filename(filename):
+        abort(400)
     author_dir = VIDEOS_DIR / author
     if not author_dir.is_dir():
         abort(404)
@@ -297,6 +327,8 @@ _user_id_cache: dict[str, str] = {}
 @app.route("/user/<screen_name>")
 @login_required
 def user_timeline(screen_name: str):
+    if not _safe_segment(screen_name):
+        abort(400)
     if screen_name not in _user_id_cache:
         user_id = get_user_id(screen_name)
         if not user_id:
@@ -315,6 +347,8 @@ def user_timeline(screen_name: str):
 @app.route("/user/<screen_name>/more", methods=["POST"])
 @login_required
 def user_timeline_more(screen_name: str):
+    if not _safe_segment(screen_name):
+        abort(400)
     if screen_name not in _user_id_cache:
         user_id = get_user_id(screen_name)
         if not user_id:

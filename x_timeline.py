@@ -9,6 +9,7 @@ X (Twitter) 首页时间线获取 + 视频下载脚本
   python3.11 x_timeline.py --download   # 获取推文并下载其中的视频
 """
 
+import os
 import re
 import sys
 import json
@@ -18,9 +19,20 @@ from uuid import uuid4
 from datetime import datetime, timezone
 from wcwidth import wcswidth
 
-# ─── 凭证配置 ────────────────────────────────────────────────────────────────
-AUTH_TOKEN = "e96f35c9ceb335c34ee845a6c60e167642d11240"
-CT0        = "75eba3cde07cd73682563c895463c053d241c36d2418e73d41db2ebf277c05f53d3c9fec106e73a8875a0b9bbc9498816f1b0adca1b20181097975a10301735bcd12b038015b1b2c563bb7fd28862528"
+# ─── 凭证配置（从环境变量读取，不可硬编码）────────────────────────────────────
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(
+            f"环境变量 {name!r} 未设置。\n"
+            f"请在项目根目录创建 .env 文件并设置该变量，"
+            f"或在 systemd service 中通过 EnvironmentFile= 加载。\n"
+            f"参考 .env.example 文件。"
+        )
+    return value
+
+AUTH_TOKEN = _require_env("X_AUTH_TOKEN")
+CT0        = _require_env("X_CT0")
 
 # X 内置的 Bearer Token（固定值，所有客户端通用）
 BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"

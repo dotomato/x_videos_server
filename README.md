@@ -1,25 +1,25 @@
 # X Videos Server
 
-A self-hosted tool for fetching videos from your X (Twitter) home timeline and browsing them through a password-protected web UI.
+一个自托管工具，用于抓取 X (Twitter) 首页时间线中的视频，并通过带密码保护的 Web 界面进行浏览。
 
-## Features
+## 功能
 
-- Fetch your X home timeline via X's GraphQL API (cookie-based auth)
-- Download videos at the highest available bitrate
-- Browse downloaded videos by author or recency
-- Auto-generated video thumbnails (first-frame via OpenCV)
-- Password-protected web interface with session-based login
-- In-browser download with real-time progress (Server-Sent Events)
-- Multi-user support with bcrypt-hashed passwords
+- 通过 X 的 GraphQL API（Cookie 认证）获取首页时间线
+- 以最高码率下载视频
+- 按作者或时间浏览已下载的视频
+- 自动生成视频缩略图（OpenCV 提取第一帧）
+- 基于 Session 的登录认证，所有页面均受密码保护
+- 在浏览器中下载视频，实时显示进度（Server-Sent Events）
+- 支持多用户，密码使用 bcrypt 加密存储
 
-## Project Structure
+## 项目结构
 
 ```
 x_videos_server/
-├── app.py              # Flask web server
-├── x_timeline.py       # CLI script for timeline fetching & video download
-├── manage_users.py     # User management utility
-├── templates/          # HTML templates
+├── app.py              # Flask Web 服务器
+├── x_timeline.py       # CLI 脚本，用于获取时间线和下载视频
+├── manage_users.py     # 用户管理工具
+├── templates/          # HTML 模板
 │   ├── index.html
 │   ├── author.html
 │   ├── play.html
@@ -27,94 +27,94 @@ x_videos_server/
 │   └── timeline.html
 ├── static/
 │   └── style.css
-├── videos/             # Downloaded videos (auto-created)
-│   └── {screen_name}/
-│       ├── {tweet_id}_{index}.mp4
-│       └── {tweet_id}_{index}.jpg  # auto-generated thumbnail
-└── users.json          # User credentials (not in repo)
+├── videos/             # 下载的视频（自动创建）
+│   └── {用户名}/
+│       ├── {tweet_id}_{序号}.mp4
+│       └── {tweet_id}_{序号}.jpg  # 自动生成的缩略图
+└── users.json          # 用户凭证（不纳入版本控制）
 ```
 
-## Requirements
+## 环境要求
 
 - Python 3.11+
-- Dependencies: `flask`, `httpx`, `bcrypt`, `opencv-python`, `wcwidth`
+- 依赖：`flask`、`httpx`、`bcrypt`、`opencv-python`、`wcwidth`
 
-Install dependencies:
+安装依赖：
 
 ```bash
 pip install flask httpx bcrypt opencv-python wcwidth
 ```
 
-## Configuration
+## 配置
 
-### X Credentials
+### X 账号凭证
 
-Edit the top of `x_timeline.py` (lines 21–26) and set your X account cookies:
+编辑 `x_timeline.py` 顶部（第 21–26 行），填入你的 X 账号 Cookie：
 
 ```python
-AUTH_TOKEN = "your_auth_token_here"
-CT0        = "your_ct0_here"
+AUTH_TOKEN = "你的 auth_token"
+CT0        = "你的 ct0"
 ```
 
-To get these values:
-1. Open x.com in your browser and log in
-2. Open DevTools → Application → Cookies → `https://x.com`
-3. Copy the values of `auth_token` and `ct0`
+获取方式：
+1. 在浏览器中打开 x.com 并登录
+2. 打开开发者工具 → Application → Cookies → `https://x.com`
+3. 复制 `auth_token` 和 `ct0` 的值
 
-### Web App Users
+### Web 应用用户
 
-Create `users.json` before running the web server:
+在启动 Web 服务器之前，先创建 `users.json`：
 
 ```bash
-python3.11 manage_users.py add <username>
+python3.11 manage_users.py add <用户名>
 ```
 
-This will prompt for a password and create the file if it doesn't exist.
+按提示输入密码，若文件不存在会自动创建。
 
-## Usage
+## 使用方法
 
-### CLI — Fetch Timeline
+### CLI — 获取时间线
 
 ```bash
-# Fetch 5 tweets (default)
+# 获取 5 条推文（默认）
 python3.11 x_timeline.py
 
-# Fetch N tweets
+# 获取 N 条推文
 python3.11 x_timeline.py 20
 
-# Fetch tweets and interactively download videos
+# 获取推文并交互式下载视频
 python3.11 x_timeline.py --download
 
-# Fetch N tweets and download videos
+# 获取 N 条推文并下载视频
 python3.11 x_timeline.py 20 --download
 ```
 
-### Web Server
+### Web 服务器
 
 ```bash
 python3.11 app.py
 ```
 
-Then open `http://localhost:5000` in your browser. All routes require login.
+启动后在浏览器中访问 `http://localhost:5000`，所有页面均需登录。
 
-| Route | Description |
+| 路由 | 说明 |
 |---|---|
-| `/` | Home: latest 10 videos + all authors |
-| `/timeline` | Fetch 20 tweets from X, download videos in-browser |
-| `/author/<name>` | All videos by a specific author |
-| `/play/<author>/<file>` | Video player page |
+| `/` | 首页：最新 10 个视频 + 所有作者 |
+| `/timeline` | 从 X 获取 20 条推文，可在浏览器中下载视频 |
+| `/author/<名称>` | 指定作者的所有视频 |
+| `/play/<作者>/<文件>` | 视频播放页 |
 
-### User Management
+### 用户管理
 
 ```bash
-python3.11 manage_users.py list               # List all users
-python3.11 manage_users.py add <username>     # Add a new user
-python3.11 manage_users.py passwd <username>  # Change password
-python3.11 manage_users.py del <username>     # Delete a user
+python3.11 manage_users.py list               # 列出所有用户
+python3.11 manage_users.py add <用户名>       # 添加新用户
+python3.11 manage_users.py passwd <用户名>    # 修改密码
+python3.11 manage_users.py del <用户名>       # 删除用户
 ```
 
-## Notes
+## 注意事项
 
-- `users.json` and `videos/` are excluded from the repository via `.gitignore`
-- The X GraphQL `queryId` is cached in `.query_id_cache.json` and auto-refreshed when the API returns 400/403
-- Thumbnails are generated on first access and cached alongside the video file
+- `users.json` 和 `videos/` 目录已通过 `.gitignore` 排除在版本控制之外
+- X GraphQL 的 `queryId` 缓存于 `.query_id_cache.json`，当 API 返回 400/403 时会自动刷新
+- 缩略图在首次访问时生成，并与视频文件存放在同一目录

@@ -386,6 +386,7 @@ button:active { background: #1677b3; }
 .dl-btn:hover:not(:disabled) { background: #1a8cd8; }
 .dl-btn:active:not(:disabled) { background: #1677b3; }
 .dl-btn:disabled { background: #2a2a2a; color: #555; cursor: default; }
+.dl-btn.downloaded { background: #14532d; color: #4ade80; border-color: #166534; cursor: default; }
 
 /* Download item wrapper — fixed layout so progress bar appearing doesn't shift the button */
 .dl-item {

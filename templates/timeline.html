@@ -70,12 +70,23 @@
                 {% set rk = t.user ~ '__' ~ t.id ~ '__' ~ vi %}
                 {% if v.variants %}
                 <div class="dl-item">
-                  <button class="dl-btn"
-                          id="btn-{{ rk }}"
-                          data-tweet-id="{{ t.id }}"
-                          data-user="{{ t.user }}"
-                          data-video-url="{{ v.variants[0].url }}"
-                          data-video-index="{{ vi }}">
+                  {% if v.downloaded %}
+                  <button class="dl-btn downloaded" id="btn-{{ rk }}"
+                          data-tweet-id="{{ t.id }}" data-user="{{ t.user }}"
+                          data-video-url="{{ v.variants[0].url }}" data-video-index="{{ vi }}"
+                          disabled>
+                    {% if t.videos|length > 1 %}视频{{ vi + 1 }} ✓{% else %}已下载{% endif %}
+                  </button>
+                  <div class="prog-wrap" id="prog-{{ rk }}">
+                    <div class="prog-track">
+                      <div class="prog-bar done" id="bar-{{ rk }}" style="width:100%"></div>
+                    </div>
+                    <span class="prog-text" id="ptxt-{{ rk }}">已下载</span>
+                  </div>
+                  {% else %}
+                  <button class="dl-btn" id="btn-{{ rk }}"
+                          data-tweet-id="{{ t.id }}" data-user="{{ t.user }}"
+                          data-video-url="{{ v.variants[0].url }}" data-video-index="{{ vi }}">
                     {% if t.videos|length > 1 %}视频{{ vi + 1 }}{% else %}下载{% endif %}
                   </button>
                   <div class="prog-wrap" id="prog-{{ rk }}" hidden>
@@ -84,6 +95,7 @@
                     </div>
                     <span class="prog-text" id="ptxt-{{ rk }}">0%</span>
                   </div>
+                  {% endif %}
                 </div>
                 {% endif %}
               {% endfor %}
@@ -232,7 +244,21 @@ function buildRow(t, index) {
     opsHtml = t.videos.map((v, vi) => {
       if (!v.variants || !v.variants[0]) return '';
       const rk = `${t.user}__${t.id}__${vi}`;
-      const label = t.videos.length > 1 ? `视频${vi + 1}` : '下载';
+      const multiLabel = t.videos.length > 1;
+      if (v.downloaded) {
+        const label = multiLabel ? `视频${vi + 1} ✓` : '已下载';
+        return `<div class="dl-item">
+          <button class="dl-btn downloaded" id="btn-${rk}"
+            data-tweet-id="${t.id}" data-user="${t.user}"
+            data-video-url="${v.variants[0].url}" data-video-index="${vi}"
+            disabled>${label}</button>
+          <div class="prog-wrap" id="prog-${rk}">
+            <div class="prog-track"><div class="prog-bar done" id="bar-${rk}" style="width:100%"></div></div>
+            <span class="prog-text" id="ptxt-${rk}">已下载</span>
+          </div>
+        </div>`;
+      }
+      const label = multiLabel ? `视频${vi + 1}` : '下载';
       return `<div class="dl-item">
         <button class="dl-btn" id="btn-${rk}"
           data-tweet-id="${t.id}" data-user="${t.user}"

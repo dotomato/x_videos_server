@@ -247,11 +247,20 @@ def _do_download(task_id: str, user: str, tweet_id: str, video_url: str, video_i
         _set_task(task_id, status="error", message=str(e), done=True)
 
 
+def mark_downloaded(tweets: list[dict]) -> list[dict]:
+    """为每条推文的每个视频标注是否已下载"""
+    for t in tweets:
+        for i, v in enumerate(t.get("videos", [])):
+            path = VIDEOS_DIR / t["user"] / f"{t['id']}_{i}.mp4"
+            v["downloaded"] = path.is_file()
+    return tweets
+
+
 @app.route("/timeline")
 @login_required
 def timeline():
     tweets, next_cursor = get_home_timeline_with_cursor(count=20)
-    return render_template("timeline.html", tweets=tweets, next_cursor=next_cursor or "")
+    return render_template("timeline.html", tweets=mark_downloaded(tweets), next_cursor=next_cursor or "")
 
 
 @app.route("/timeline/more", methods=["POST"])
@@ -262,8 +271,7 @@ def timeline_more():
     if not cursor:
         return jsonify({"error": "missing cursor"}), 400
     tweets, next_cursor = get_home_timeline_with_cursor(count=20, cursor=cursor)
-    # 将 tweets 序列化为前端可用的格式
-    return jsonify({"tweets": tweets, "next_cursor": next_cursor or ""})
+    return jsonify({"tweets": mark_downloaded(tweets), "next_cursor": next_cursor or ""})
 
 
 @app.route("/timeline/download", methods=["POST"])

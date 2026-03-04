@@ -6,6 +6,7 @@ tests/test_app.py
   - _safe_filename()
   - mark_downloaded()
   - 路由：/play, /delete, /videos, /author, /user, /timeline/more
+  - 安全：速率限制、open redirect 修复、HTTP 安全响应头
 """
 import json
 import sys
@@ -344,3 +345,129 @@ class TestLoginRequired:
         with app.test_client() as c:
             resp = c.get("/timeline")
             assert resp.status_code == 302
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 登录速率限制
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLoginRateLimit:
+    def _post_login(self, client, username="nobody", password="wrong"):
+        return client.post(
+            "/login",
+            data={"username": username, "password": password},
+            environ_base={"REMOTE_ADDR": "10.0.0.1"},
+        )
+
+    def test_too_many_failures_returns_429(self, app, monkeypatch):
+        """连续失败超过阈值后应返回 429。"""
+        # 清除旧的失败记录，保证测试隔离
+        monkeypatch.setattr(flask_app, "_login_attempts", {})
+        # check_password 总返回 False
+        monkeypatch.setattr(flask_app, "check_password", lambda u, p: False)
+        with app.test_client() as c:
+            for _ in range(flask_app._MAX_ATTEMPTS):
+                c.post("/login", data={"username": "x", "password": "x"},
+                       environ_base={"REMOTE_ADDR": "10.0.0.2"})
+            resp = c.post("/login", data={"username": "x", "password": "x"},
+                          environ_base={"REMOTE_ADDR": "10.0.0.2"})
+        assert resp.status_code == 429
+
+    def test_successful_login_clears_failures(self, app, monkeypatch):
+        """成功登录后失败计数应清零，再次失败仍可继续计数。"""
+        monkeypatch.setattr(flask_app, "_login_attempts", {})
+        call_count = {"n": 0}
+
+        def fake_check(u, p):
+            call_count["n"] += 1
+            return call_count["n"] >= 2  # 第二次才成功
+
+        monkeypatch.setattr(flask_app, "check_password", fake_check)
+        with app.test_client() as c:
+            # 第一次失败
+            c.post("/login", data={"username": "u", "password": "p"},
+                   environ_base={"REMOTE_ADDR": "10.0.0.3"})
+            # 第二次成功
+            resp = c.post("/login", data={"username": "u", "password": "p"},
+                          environ_base={"REMOTE_ADDR": "10.0.0.3"})
+        assert resp.status_code == 303
+        assert flask_app._login_attempts.get("10.0.0.3") is None
+
+    def test_empty_credentials_not_checked(self, app, monkeypatch):
+        """空用户名或密码不应调用 check_password，直接报错。"""
+        monkeypatch.setattr(flask_app, "_login_attempts", {})
+        called = {"v": False}
+        def fake_check(u, p):
+            called["v"] = True
+            return False
+        monkeypatch.setattr(flask_app, "check_password", fake_check)
+        with app.test_client() as c:
+            resp = c.post("/login", data={"username": "", "password": ""},
+                          environ_base={"REMOTE_ADDR": "10.0.0.4"})
+        assert resp.status_code == 200
+        assert called["v"] is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 开放重定向修复（next 参数）
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOpenRedirectFix:
+    def _login_with_next(self, app, monkeypatch, next_param):
+        monkeypatch.setattr(flask_app, "_login_attempts", {})
+        monkeypatch.setattr(flask_app, "check_password", lambda u, p: True)
+        with app.test_client() as c:
+            resp = c.post(
+                f"/login?next={next_param}",
+                data={"username": "u", "password": "p"},
+            )
+        return resp
+
+    def test_valid_relative_path_is_redirected(self, app, monkeypatch):
+        resp = self._login_with_next(app, monkeypatch, "/timeline")
+        assert resp.status_code == 303
+        assert resp.headers["Location"].endswith("/timeline")
+
+    def test_external_url_redirects_to_index(self, app, monkeypatch):
+        """next=https://evil.com 应重定向到首页，而非外部站点。"""
+        resp = self._login_with_next(app, monkeypatch, "https://evil.com")
+        assert resp.status_code == 303
+        loc = resp.headers["Location"]
+        assert "evil.com" not in loc
+
+    def test_protocol_relative_url_redirects_to_index(self, app, monkeypatch):
+        """next=//evil.com 应重定向到首页。"""
+        resp = self._login_with_next(app, monkeypatch, "//evil.com/path")
+        assert resp.status_code == 303
+        loc = resp.headers["Location"]
+        assert "evil.com" not in loc
+
+    def test_empty_next_redirects_to_index(self, app, monkeypatch):
+        resp = self._login_with_next(app, monkeypatch, "")
+        assert resp.status_code == 303
+        assert resp.headers["Location"].endswith("/")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HTTP 安全响应头
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSecurityHeaders:
+    def test_login_page_has_security_headers(self, app):
+        with app.test_client() as c:
+            resp = c.get("/login")
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+        assert resp.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+
+    def test_protected_page_has_security_headers(self, client):
+        resp = client.get("/")
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+
+    def test_csp_header_present(self, app):
+        with app.test_client() as c:
+            resp = c.get("/login")
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "default-src" in csp
+        assert "frame-ancestors" in csp

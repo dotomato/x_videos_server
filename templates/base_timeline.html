@@ -265,15 +265,24 @@ function buildRow(t, index) {
   }
 
   const snippet = t.text.length > 80 ? t.text.slice(0, 80) + '…' : t.text;
-  const escaped = t.text.replace(/"/g, '&quot;');
+  // 对 title 属性和单元格内容做完整 HTML 转义，防止 XSS
+  function escHtml(s) {
+    return s.replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+  }
+  const escapedTitle   = escHtml(t.text);
+  const escapedSnippet = escHtml(snippet);
 
   return `<tr>
     <td class="num">${index}</td>
     <td class="author-cell">
-      <a href="/user/${t.user}" target="_blank">@${t.user}</a>
-      <br><small>${t.name}</small>
+      <a href="/user/${escHtml(t.user)}" target="_blank">@${escHtml(t.user)}</a>
+      <br><small>${escHtml(t.name)}</small>
     </td>
-    <td class="snippet" title="${escaped}">${snippet}</td>
+    <td class="snippet" title="${escapedTitle}">${escapedSnippet}</td>
     <td class="center thumb-cell">${thumbHtml}</td>
     <td class="center meta-cell">${metaHtml}</td>
     <td class="center ops-cell">${opsHtml}</td>

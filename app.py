@@ -4,6 +4,7 @@ X Videos - Flask 视频展示网站
 """
 
 import json
+import os
 import re
 import time
 import uuid
@@ -42,11 +43,50 @@ def load_config() -> dict:
     with open(USERS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
-config = load_config()
-app.secret_key = config["secret_key"]
+_config = load_config()
+# SECRET_KEY 优先读取环境变量，回退到 users.json（兼容旧部署）
+app.secret_key = os.environ.get("SECRET_KEY") or _config.get("secret_key")
+if not app.secret_key:
+    raise RuntimeError("未设置 SECRET_KEY 环境变量，也未在 users.json 中找到 secret_key")
 
 
 # ─── 认证 ─────────────────────────────────────────────────────────────────────
+
+# 登录失败计数器：{ ip: (失败次数, 首次失败时间戳) }
+_login_attempts: dict[str, tuple[int, float]] = {}
+_LOGIN_LOCK = threading.Lock()
+_MAX_ATTEMPTS = 5       # 最多连续失败次数
+_LOCKOUT_SECS = 300     # 锁定时长（秒）
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """返回 True 表示允许登录，False 表示已被锁定。"""
+    with _LOGIN_LOCK:
+        if ip not in _login_attempts:
+            return True
+        count, first_ts = _login_attempts[ip]
+        if count < _MAX_ATTEMPTS:
+            return True
+        # 锁定期过后自动解除
+        if time.time() - first_ts > _LOCKOUT_SECS:
+            del _login_attempts[ip]
+            return True
+        return False
+
+
+def _record_failure(ip: str) -> None:
+    with _LOGIN_LOCK:
+        if ip in _login_attempts:
+            count, first_ts = _login_attempts[ip]
+            _login_attempts[ip] = (count + 1, first_ts)
+        else:
+            _login_attempts[ip] = (1, time.time())
+
+
+def _clear_failures(ip: str) -> None:
+    with _LOGIN_LOCK:
+        _login_attempts.pop(ip, None)
+
 
 def check_password(username: str, password: str) -> bool:
     users = load_config()["users"]
@@ -68,14 +108,27 @@ def login_required(f):
 def login():
     error = None
     if request.method == "POST":
-        username = request.form.get("username", "")
+        ip = request.remote_addr or "unknown"
+        if not _check_rate_limit(ip):
+            error = f"登录尝试过多，请 {_LOCKOUT_SECS // 60} 分钟后再试"
+            logger.warning("登录被限速: ip=%s", ip)
+            return render_template("login.html", error=error), 429
+        username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
-        if check_password(username, password):
+        if not username or not password:
+            error = "用户名和密码不能为空"
+        elif check_password(username, password):
+            _clear_failures(ip)
             session["logged_in"] = True
             session["username"] = username
-            next_url = request.args.get("next") or url_for("index")
+            raw_next = request.args.get("next", "")
+            # 只允许本站相对路径，防止开放重定向（open redirect）
+            next_url = raw_next if raw_next.startswith("/") and not raw_next.startswith("//") else url_for("index")
             return redirect(next_url, 303)
-        error = "用户名或密码错误"
+        else:
+            _record_failure(ip)
+            logger.warning("登录失败: ip=%s username=%s", ip, username)
+            error = "用户名或密码错误"
     return render_template("login.html", error=error)
 
 
@@ -83,6 +136,33 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+# ─── 安全响应头 ────────────────────────────────────────────────────────────────
+
+@app.after_request
+def add_security_headers(response):
+    """为所有响应添加安全头，防止常见 Web 攻击。"""
+    # 禁止浏览器 MIME 类型猜测
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # 禁止在 iframe 中嵌入（防止点击劫持）
+    response.headers["X-Frame-Options"] = "DENY"
+    # 关闭旧版 XSS 过滤器（现代浏览器用 CSP，旧过滤器可能被绕过）
+    response.headers["X-XSS-Protection"] = "0"
+    # 引用信息只发送源（不泄露路径）
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # 仅对视频流响应豁免 CSP（send_from_directory 用于 /videos/ 路由）
+    if not response.direct_passthrough:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: pbs.twimg.com video.twimg.com; "
+            "media-src 'self' blob:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none';"
+        )
+    return response
 
 
 # ─── 路径参数校验 ─────────────────────────────────────────────────────────────
@@ -420,4 +500,5 @@ def timeline_progress(task_id: str):
 # ─── 启动 ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    _debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    app.run(host="0.0.0.0", port=5000, debug=_debug)

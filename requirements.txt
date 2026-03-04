@@ -1,0 +1,5 @@
+flask
+httpx
+bcrypt
+opencv-python
+wcwidth

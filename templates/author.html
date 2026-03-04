@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>@{{ author }} — X Videos</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <a class="back-btn" href="/">← 返回首页</a>
+  <a class="back-btn" href="/timeline">时间线</a>
+  <h1>@<span style="color:#1d9bf0">{{ author }}</span></h1>
+  <span class="count">共 {{ videos|length }} 个视频</span>
+  <a class="logout" href="/logout">退出登录</a>
+</header>
+
+<main>
+  {% if videos %}
+  <div class="grid">
+    {% for v in videos %}
+    <div class="card">
+      <div class="thumb">
+        <a href="/play/{{ v.author }}/{{ v.mp4 }}" target="_blank">
+          {% if v.jpg %}
+          <img src="/videos/{{ v.author }}/{{ v.jpg }}" loading="lazy" alt="{{ v.author }}">
+          {% else %}
+          <div class="no-thumb">🎬</div>
+          {% endif %}
+          <div class="play-btn">▶</div>
+        </a>
+      </div>
+      <div class="card-info">{{ v.tweet_id }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">该作者暂无视频</p>
+  {% endif %}
+</main>
+
+</body>
+</html>

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 — X Videos</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login">
+  <div class="login-box">
+    <h1><span>X</span> Videos</h1>
+    <form method="post">
+      <label for="username">用户名</label>
+      <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+
+      <label for="password">密码</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+
+      {% if error %}
+      <div class="error">{{ error }}</div>
+      {% endif %}
+
+      <button type="submit">登录</button>
+    </form>
+  </div>
+</body>
+</html>

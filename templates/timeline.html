@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>时间线 — X Videos</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <a class="back-btn" href="/">← 返回首页</a>
+  <h1><span>X</span> 时间线</h1>
+  <span class="count">共 {{ tweets|length }} 条（{{ tweets|selectattr('videos')|list|length }} 条含视频）</span>
+  <a class="back-btn" href="/timeline" id="refresh-btn">刷新</a>
+  <a class="logout" href="/logout">退出登录</a>
+</header>
+
+<main>
+  {% if tweets %}
+  <div class="tl-wrap">
+    <table class="tl-table">
+      <thead>
+        <tr>
+          <th style="width:42px">#</th>
+          <th>作者</th>
+          <th>推文摘要</th>
+          <th class="center" style="width:100px">预览</th>
+          <th class="center" style="width:110px">时长 / 大小</th>
+          <th class="center" style="width:160px">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tweets %}
+        <tr>
+          <td class="num">{{ loop.index }}</td>
+          <td class="author-cell">
+            <a href="{{ t.url }}" target="_blank" rel="noopener">@{{ t.user }}</a>
+            <br><small>{{ t.name }}</small>
+          </td>
+          <td class="snippet" title="{{ t.text }}">{{ t.text[:80] }}{% if t.text|length > 80 %}…{% endif %}</td>
+          <td class="center thumb-cell">
+            {% if t.videos and t.videos[0].thumb %}
+              <div class="tl-thumb-wrap">
+                <img class="tl-thumb" src="{{ t.videos[0].thumb }}" alt="" loading="lazy">
+                <img class="tl-thumb-preview" src="{{ t.videos[0].thumb }}" alt="">
+              </div>
+            {% else %}
+              <span class="no-video">—</span>
+            {% endif %}
+          </td>
+          <td class="center meta-cell">
+            {% if t.videos %}
+              {% set v0 = t.videos[0] %}
+              {% set dur_s = (v0.duration_ms / 1000)|int %}
+              {% if v0.variants and v0.variants[0].bitrate %}
+                {% set size_mb = (v0.variants[0].bitrate / 8 * v0.duration_ms / 1000 / 1024 / 1024) | round(1) %}
+                <span class="meta-dur">{{ dur_s }}s</span>
+                <span class="meta-size">~{{ size_mb }} MB</span>
+              {% else %}
+                <span class="meta-dur">{{ dur_s }}s</span>
+              {% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td class="center ops-cell">
+            {% if t.videos %}
+              {% for v in t.videos %}
+                {% set vi = loop.index0 %}
+                {% set rk = t.user ~ '__' ~ t.id ~ '__' ~ vi %}
+                {% if v.variants %}
+                <div class="dl-item">
+                  <button class="dl-btn"
+                          id="btn-{{ rk }}"
+                          data-tweet-id="{{ t.id }}"
+                          data-user="{{ t.user }}"
+                          data-video-url="{{ v.variants[0].url }}"
+                          data-video-index="{{ vi }}">
+                    {% if t.videos|length > 1 %}视频{{ vi + 1 }}{% else %}下载{% endif %}
+                  </button>
+                  <div class="prog-wrap" id="prog-{{ rk }}" hidden>
+                    <div class="prog-track">
+                      <div class="prog-bar" id="bar-{{ rk }}"></div>
+                    </div>
+                    <span class="prog-text" id="ptxt-{{ rk }}">0%</span>
+                  </div>
+                </div>
+                {% endif %}
+              {% endfor %}
+            {% else %}
+              <span class="no-video">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">未获取到推文，请检查凭证配置后刷新。</p>
+  {% endif %}
+</main>
+
+<script>
+document.querySelectorAll('.dl-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const tweetId   = btn.dataset.tweetId;
+    const user      = btn.dataset.user;
+    const videoUrl  = btn.dataset.videoUrl;
+    const videoIndex = parseInt(btn.dataset.videoIndex, 10);
+    const rk = `${user}__${tweetId}__${videoIndex}`;
+
+    btn.disabled = true;
+    btn.textContent = '请求中…';
+
+    let taskId;
+    try {
+      const res = await fetch('/timeline/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tweet_id: tweetId,
+          user: user,
+          video_url: videoUrl,
+          video_index: videoIndex,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      ({ task_id: taskId } = await res.json());
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = '重试';
+      return;
+    }
+
+    const progWrap = document.getElementById(`prog-${rk}`);
+    const bar      = document.getElementById(`bar-${rk}`);
+    const ptxt     = document.getElementById(`ptxt-${rk}`);
+    progWrap.hidden = false;
+    btn.textContent = '下载中';
+
+    const es = new EventSource(`/timeline/progress/${taskId}`);
+    es.onmessage = e => {
+      const d = JSON.parse(e.data);
+
+      if (d.total > 0) {
+        const pct = Math.min(100, Math.round(d.progress / d.total * 100));
+        bar.style.width = pct + '%';
+        ptxt.textContent = pct + '%';
+      }
+
+      if (d.status === 'done') {
+        bar.style.width = '100%';
+        bar.classList.add('done');
+        ptxt.textContent = '完成';
+        btn.textContent = '已下载';
+        es.close();
+      } else if (d.status === 'skipped') {
+        bar.style.width = '100%';
+        bar.classList.add('done');
+        ptxt.textContent = '已存在';
+        btn.textContent = '已存在';
+        es.close();
+      } else if (d.status === 'error') {
+        bar.classList.add('error');
+        ptxt.textContent = '失败';
+        btn.disabled = false;
+        btn.textContent = '重试';
+        es.close();
+      }
+    };
+
+    es.onerror = () => {
+      es.close();
+      // 若进度条还没变绿/红则标记失败
+      if (!bar.classList.contains('done') && !bar.classList.contains('error')) {
+        bar.classList.add('error');
+        ptxt.textContent = '连接断开';
+        btn.disabled = false;
+        btn.textContent = '重试';
+      }
+    };
+  });
+});
+
+// Thumbnail hover preview — follow mouse
+document.querySelectorAll('.tl-thumb-wrap').forEach(wrap => {
+  const preview = wrap.querySelector('.tl-thumb-preview');
+  wrap.addEventListener('mousemove', e => {
+    const GAP = 16, pw = 320;
+    const ph = preview.naturalHeight
+      ? Math.round(preview.naturalHeight / preview.naturalWidth * pw) : 180;
+    let x = e.clientX + GAP;
+    let y = e.clientY - Math.round(ph / 2);
+    if (x + pw > window.innerWidth  - GAP) x = e.clientX - pw - GAP;
+    if (y < GAP)                            y = GAP;
+    if (y + ph > window.innerHeight - GAP)  y = window.innerHeight - ph - GAP;
+    preview.style.left = x + 'px';
+    preview.style.top  = y + 'px';
+  });
+});
+</script>
+
+</body>
+</html>

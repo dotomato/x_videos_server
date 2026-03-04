@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>@{{ author }} — X Videos</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="play">
+
+<header>
+  <a class="back-btn" href="{{ back }}">← 返回</a>
+  <a class="author-link" href="/author/{{ author }}">@<span>{{ author }}</span></a>
+  <a class="logout" href="/logout">退出登录</a>
+</header>
+
+<div class="player-wrap">
+  <video src="{{ src }}" controls autoplay playsinline poster="{{ thumb }}">
+    您的浏览器不支持 video 标签。
+  </video>
+</div>
+
+</body>
+</html>

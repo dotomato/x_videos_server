@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>X Videos</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <h1><span>X</span> Videos</h1>
+  <a class="back-btn" href="/timeline">时间线</a>
+  <a class="logout" href="/logout">退出登录</a>
+</header>
+
+<main>
+
+  <!-- 最新视频 -->
+  <section>
+    <h2>最新视频</h2>
+    {% if latest %}
+    <div class="grid">
+      {% for v in latest %}
+      <div class="card">
+        <div class="thumb">
+          <a href="/play/{{ v.author }}/{{ v.mp4 }}" target="_blank">
+            {% if v.jpg %}
+            <img src="/videos/{{ v.author }}/{{ v.jpg }}" loading="lazy" alt="{{ v.author }}">
+            {% else %}
+            <div class="no-thumb">🎬</div>
+            {% endif %}
+            <div class="play-btn">▶</div>
+          </a>
+        </div>
+        <div class="card-info">
+          <a href="/author/{{ v.author }}" target="_blank">@{{ v.author }}</a>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">暂无视频</p>
+    {% endif %}
+  </section>
+
+  <!-- 按作者浏览 -->
+  <section>
+    <h2>按作者浏览</h2>
+    {% if by_author %}
+    <div class="grid">
+      {% for v in by_author %}
+      <div class="card">
+        <div class="thumb">
+          <a href="/play/{{ v.author }}/{{ v.mp4 }}" target="_blank">
+            {% if v.jpg %}
+            <img src="/videos/{{ v.author }}/{{ v.jpg }}" loading="lazy" alt="{{ v.author }}">
+            {% else %}
+            <div class="no-thumb">🎬</div>
+            {% endif %}
+            <div class="play-btn">▶</div>
+          </a>
+        </div>
+        <div class="card-info">
+          <a href="/author/{{ v.author }}" target="_blank">@{{ v.author }}</a>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty">暂无视频</p>
+    {% endif %}
+  </section>
+
+</main>
+
+</body>
+</html>

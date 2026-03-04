@@ -247,6 +247,25 @@ def _do_download(task_id: str, user: str, tweet_id: str, video_url: str, video_i
         _set_task(task_id, status="error", message=str(e), done=True)
 
 
+@app.route("/timeline/check_downloaded", methods=["POST"])
+@login_required
+def timeline_check_downloaded():
+    """批量检查视频是否已下载。
+    请求体: [{"user": "xxx", "tweet_id": "yyy", "index": 0}, ...]
+    响应:   {"user__tweet_id__index": true/false, ...}
+    """
+    items = request.get_json(force=True) or []
+    result = {}
+    for item in items:
+        user     = item.get("user", "")
+        tweet_id = item.get("tweet_id", "")
+        index    = int(item.get("index", 0))
+        key      = f"{user}__{tweet_id}__{index}"
+        path     = VIDEOS_DIR / user / f"{tweet_id}_{index}.mp4"
+        result[key] = path.is_file()
+    return jsonify(result)
+
+
 @app.route("/timeline")
 @login_required
 def timeline():

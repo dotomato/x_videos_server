@@ -111,6 +111,39 @@ let nextCursor = {{ next_cursor | tojson }};
 let loading = false;
 let exhausted = false;
 
+// ─── 批量检查已下载状态，更新按钮外观
+async function checkDownloaded(btns) {
+  if (!btns || btns.length === 0) return;
+  const items = [...btns].map(btn => ({
+    user:     btn.dataset.user,
+    tweet_id: btn.dataset.tweetId,
+    index:    parseInt(btn.dataset.videoIndex, 10),
+  }));
+  try {
+    const res = await fetch('/timeline/check_downloaded', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(items),
+    });
+    if (!res.ok) return;
+    const result = await res.json();
+    btns.forEach(btn => {
+      const rk = `${btn.dataset.user}__${btn.dataset.tweetId}__${btn.dataset.videoIndex}`;
+      if (result[rk]) {
+        btn.disabled = true;
+        btn.textContent = '已下载';
+        btn.classList.add('downloaded');
+        const progWrap = document.getElementById(`prog-${rk}`);
+        const bar  = document.getElementById(`bar-${rk}`);
+        const ptxt = document.getElementById(`ptxt-${rk}`);
+        if (progWrap) progWrap.hidden = false;
+        if (bar)  { bar.style.width = '100%'; bar.classList.add('done'); }
+        if (ptxt) ptxt.textContent = '已下载';
+      }
+    });
+  } catch { /* 静默失败，不影响主功能 */ }
+}
+
 // ─── 下载按钮逻辑（绑定到新增行也能生效）
 function bindDlBtn(btn) {
   btn.addEventListener('click', async () => {
@@ -174,6 +207,7 @@ function bindDlBtn(btn) {
 }
 
 document.querySelectorAll('.dl-btn').forEach(bindDlBtn);
+checkDownloaded(document.querySelectorAll('.dl-btn'));
 
 // ─── Thumbnail hover preview
 function bindThumbPreview(wrap) {
@@ -291,10 +325,12 @@ async function loadMore() {
 
     // 绑定新行的事件
     const newRows = [...tbody.querySelectorAll('tr')].slice(startIndex - 1);
+    const newBtns = [];
     newRows.forEach(row => {
-      row.querySelectorAll('.dl-btn').forEach(bindDlBtn);
+      row.querySelectorAll('.dl-btn').forEach(btn => { bindDlBtn(btn); newBtns.push(btn); });
       row.querySelectorAll('.tl-thumb-wrap').forEach(bindThumbPreview);
     });
+    checkDownloaded(newBtns);
 
     updateCount();
     loadStatus.textContent = '';

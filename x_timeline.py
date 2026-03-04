@@ -564,6 +564,65 @@ def get_user_timeline_with_cursor(user_id: str, count: int = 20, cursor: str = N
         return parse_user_tweets(resp.json())
 
 
+# ─── 单条推文详情 ──────────────────────────────────────────────────────────────
+
+# 备用 queryId（可能随 X 更新失效，届时需从 JS bundle 重新提取）
+FALLBACK_TWEET_DETAIL_QUERY_ID = "BbCrSoXIR7z93lLCVFlQ2Q"
+_TWEET_DETAIL_QUERY_ID_CACHE_KEY = "tweet_detail_query_id"
+
+
+def get_tweet_detail_query_id() -> str:
+    cache = _load_cache()
+    return cache.get(_TWEET_DETAIL_QUERY_ID_CACHE_KEY) or FALLBACK_TWEET_DETAIL_QUERY_ID
+
+
+def get_tweet_by_id(tweet_id: str) -> dict | None:
+    """通过推文 ID 获取单条推文详情（含视频信息）。
+    使用 TweetDetail GraphQL 接口，返回与 parse_timeline 格式一致的 tweet dict。
+    失败时返回 None。
+    """
+    cookies = {"auth_token": AUTH_TOKEN, "ct0": CT0}
+    query_id = get_tweet_detail_query_id()
+    url = f"https://x.com/i/api/graphql/{query_id}/TweetDetail"
+    variables = {
+        "focalTweetId":                          tweet_id,
+        "with_rux_injections":                   False,
+        "includePromotedContent":                True,
+        "withCommunity":                         True,
+        "withQuickPromoteEligibilityTweetFields": True,
+        "withBirdwatchNotes":                    True,
+        "withVoice":                             True,
+        "withV2Timeline":                        True,
+    }
+    params = {
+        "variables": json.dumps(variables),
+        "features":  json.dumps(TWEET_FEATURES),
+    }
+    with httpx.Client(cookies=cookies, headers=make_headers(), timeout=15) as client:
+        try:
+            resp = client.get(url, params=params)
+            if resp.status_code != 200:
+                print(f"TweetDetail 请求失败: HTTP {resp.status_code}")
+                return None
+            data = resp.json()
+            instructions = (
+                data.get("data", {})
+                    .get("threaded_conversation_with_injections_v2", {})
+                    .get("instructions", [])
+            )
+            tweets, _ = _parse_instructions(instructions)
+            # 优先返回 focalTweetId 对应的推文
+            for t in tweets:
+                if t["id"] == tweet_id:
+                    return t
+            # 若结构不同则返回解析到的第一条
+            if tweets:
+                return tweets[0]
+        except Exception as e:
+            print(f"获取推文详情失败: {e}")
+    return None
+
+
 # ─── 入口 ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     args     = sys.argv[1:]

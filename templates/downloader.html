@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>下载器 — X Videos</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <style>
+    /* ─── 下载器专属样式 ─── */
+    .dl-page-main {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 36px 20px 60px;
+    }
+
+    .url-form {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+
+    .url-input {
+      flex: 1;
+      padding: 10px 14px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #eee;
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.2s;
+      margin: 0;
+    }
+    .url-input:focus { border-color: #1d9bf0; }
+    .url-input::placeholder { color: #555; }
+
+    .fetch-btn {
+      margin: 0;
+      width: auto;
+      padding: 10px 22px;
+      white-space: nowrap;
+      font-size: 0.9rem;
+    }
+    .fetch-btn:disabled { background: #2a2a2a; color: #555; cursor: default; }
+
+    /* 错误提示 */
+    .msg-error {
+      padding: 10px 14px;
+      background: rgba(220,60,60,0.12);
+      border: 1px solid rgba(220,60,60,0.3);
+      border-radius: 8px;
+      color: #f87171;
+      font-size: 0.88rem;
+      margin-bottom: 20px;
+    }
+
+    /* 加载 spinner */
+    .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid #333;
+      border-top-color: #1d9bf0;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text { color: #888; font-size: 0.9rem; }
+
+    /* 推文卡片 */
+    .tweet-card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 20px 22px;
+      margin-bottom: 24px;
+    }
+
+    .tweet-meta {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .tweet-author {
+      font-weight: 600;
+      color: #fff;
+      font-size: 0.95rem;
+    }
+    .tweet-screen-name {
+      color: #1d9bf0;
+      font-size: 0.88rem;
+      text-decoration: none;
+    }
+    .tweet-screen-name:hover { text-decoration: underline; }
+    .tweet-date {
+      color: #555;
+      font-size: 0.82rem;
+      margin-left: auto;
+    }
+    .tweet-text {
+      color: #ccc;
+      font-size: 0.92rem;
+      line-height: 1.6;
+      word-break: break-word;
+      margin-bottom: 6px;
+    }
+    .tweet-link {
+      display: inline-block;
+      margin-top: 6px;
+      color: #555;
+      font-size: 0.78rem;
+      text-decoration: none;
+    }
+    .tweet-link:hover { color: #1d9bf0; }
+
+    /* 视频列表 */
+    .videos-section { margin-top: 8px; }
+    .videos-section h2 {
+      font-size: 0.8rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 14px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #222;
+    }
+
+    .video-list { display: flex; flex-direction: column; gap: 16px; }
+
+    .video-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+
+    .video-thumb-wrap {
+      flex-shrink: 0;
+      width: 140px;
+      height: 79px;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #000;
+    }
+    .video-thumb-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .no-thumb-placeholder {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #444;
+      font-size: 1.5rem;
+    }
+
+    .video-info { flex: 1; min-width: 0; }
+    .video-title {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #ddd;
+      margin-bottom: 6px;
+    }
+    .video-meta {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .video-meta span {
+      font-size: 0.78rem;
+      color: #666;
+    }
+    .video-meta .highlight { color: #aaa; }
+
+    /* 下载控件 */
+    .dl-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+    .dl-btn-lg {
+      display: inline-block;
+      padding: 6px 20px;
+      background: #1d9bf0;
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+      white-space: nowrap;
+      margin: 0;
+      width: auto;
+    }
+    .dl-btn-lg:hover:not(:disabled) { background: #1a8cd8; }
+    .dl-btn-lg:disabled { background: #2a2a2a; color: #555; cursor: default; }
+    .dl-btn-lg.downloaded { background: #14532d; color: #4ade80; cursor: default; }
+
+    .prog-wrap-lg {
+      flex: 1;
+      min-width: 140px;
+      max-width: 260px;
+    }
+    .prog-wrap-lg[hidden] {
+      display: flex !important;
+      visibility: hidden;
+    }
+    .prog-wrap-lg .prog-track {
+      height: 6px;
+      background: #222;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 4px;
+    }
+    .prog-wrap-lg .prog-bar {
+      height: 100%;
+      width: 0;
+      background: #1d9bf0;
+      border-radius: 4px;
+      transition: width 0.25s ease;
+    }
+    .prog-wrap-lg .prog-bar.done  { background: #22c55e; }
+    .prog-wrap-lg .prog-bar.error { background: #ef4444; }
+    .prog-wrap-lg .prog-text {
+      display: block;
+      font-size: 0.75rem;
+      color: #666;
+    }
+
+    .no-videos-msg {
+      color: #555;
+      font-size: 0.88rem;
+      padding: 16px 0 4px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <a class="back-btn" href="/">← 首页</a>
+  <h1><span>X</span> 下载器</h1>
+  <a class="logout" href="/logout">退出登录</a>
+</header>
+
+<main class="dl-page-main">
+
+  <!-- URL 输入表单 -->
+  <form class="url-form" id="url-form" autocomplete="off">
+    <input
+      class="url-input"
+      id="url-input"
+      type="url"
+      placeholder="https://x.com/user/status/123456789"
+      required
+      autofocus
+    >
+    <button class="fetch-btn" type="submit" id="fetch-btn">获取视频</button>
+  </form>
+
+  <!-- 错误提示 -->
+  <div class="msg-error" id="msg-error" hidden></div>
+
+  <!-- 加载中 -->
+  <div id="loading-area" hidden>
+    <span class="spinner"></span>
+    <span class="loading-text">正在获取推文信息…</span>
+  </div>
+
+  <!-- 推文结果区 -->
+  <div id="result-area" hidden>
+    <!-- 推文卡片 -->
+    <div class="tweet-card" id="tweet-card">
+      <div class="tweet-meta">
+        <span class="tweet-author" id="tweet-author"></span>
+        <a class="tweet-screen-name" id="tweet-sn" href="#" target="_blank"></a>
+        <span class="tweet-date" id="tweet-date"></span>
+      </div>
+      <div class="tweet-text" id="tweet-text"></div>
+      <a class="tweet-link" id="tweet-link" href="#" target="_blank">查看原推文 ↗</a>
+    </div>
+
+    <!-- 视频列表 -->
+    <div class="videos-section">
+      <h2>视频</h2>
+      <div class="video-list" id="video-list"></div>
+      <div class="no-videos-msg" id="no-videos-msg" hidden>该推文不含视频。</div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function fmtSize(bitrate, durationMs) {
+  if (!bitrate || !durationMs) return '';
+  const mb = (bitrate / 8 * durationMs / 1000 / 1024 / 1024).toFixed(1);
+  return `~${mb} MB`;
+}
+
+function fmtDur(ms) {
+  if (!ms) return '';
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+}
+
+// ─── 下载 + SSE 进度 ────────────────────────────────────────────────────────
+function startDownload(btn, progWrap, tweet, videoIndex) {
+  const rk = `${tweet.user}__${tweet.id}__${videoIndex}`;
+  const v = tweet.videos[videoIndex];
+
+  btn.disabled = true;
+  btn.textContent = '请求中…';
+
+  fetch('/timeline/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tweet_id: tweet.id,
+      user: tweet.user,
+      video_url: v.variants[0].url,
+      video_index: videoIndex,
+    }),
+  })
+  .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+  .then(({ task_id }) => {
+    progWrap.hidden = false;
+    btn.textContent = '下载中';
+
+    const bar  = progWrap.querySelector('.prog-bar');
+    const ptxt = progWrap.querySelector('.prog-text');
+    const es   = new EventSource(`/timeline/progress/${task_id}`);
+
+    es.onmessage = e => {
+      const d = JSON.parse(e.data);
+      if (d.total > 0) {
+        const pct = Math.min(100, Math.round(d.progress / d.total * 100));
+        bar.style.width = pct + '%';
+        ptxt.textContent = pct + '%';
+      }
+      if (d.status === 'done') {
+        bar.style.width = '100%'; bar.classList.add('done');
+        ptxt.textContent = '完成';
+        btn.textContent = '已下载'; btn.classList.add('downloaded');
+        es.close();
+      } else if (d.status === 'skipped') {
+        bar.style.width = '100%'; bar.classList.add('done');
+        ptxt.textContent = '已存在';
+        btn.textContent = '已存在'; btn.classList.add('downloaded');
+        es.close();
+      } else if (d.status === 'error') {
+        bar.classList.add('error'); ptxt.textContent = '失败';
+        btn.disabled = false; btn.textContent = '重试';
+        es.close();
+      }
+    };
+    es.onerror = () => {
+      if (!bar.classList.contains('done') && !bar.classList.contains('error')) {
+        bar.classList.add('error');
+        ptxt.textContent = '连接断开';
+        btn.disabled = false; btn.textContent = '重试';
+      }
+      es.close();
+    };
+  })
+  .catch(() => {
+    btn.disabled = false;
+    btn.textContent = '重试';
+  });
+}
+
+// ─── 渲染视频列表 ────────────────────────────────────────────────────────────
+function renderVideos(tweet) {
+  const list = document.getElementById('video-list');
+  const noMsg = document.getElementById('no-videos-msg');
+  list.innerHTML = '';
+
+  if (!tweet.videos || tweet.videos.length === 0) {
+    noMsg.hidden = false;
+    return;
+  }
+  noMsg.hidden = true;
+
+  tweet.videos.forEach((v, vi) => {
+    if (!v.variants || v.variants.length === 0) return;
+
+    const dur  = fmtDur(v.duration_ms);
+    const br   = v.variants[0].bitrate;
+    const size = fmtSize(br, v.duration_ms);
+    const brkbps = br ? `${Math.round(br / 1000)} kbps` : '';
+    const isGif = v.type === 'animated_gif';
+    const label = tweet.videos.length > 1 ? `视频 ${vi + 1}` : '视频';
+
+    const item = document.createElement('div');
+    item.className = 'video-item';
+    item.innerHTML = `
+      <div class="video-thumb-wrap">
+        ${v.thumb
+          ? `<img src="${escHtml(v.thumb)}" alt="${escHtml(label)}" loading="lazy">`
+          : `<div class="no-thumb-placeholder">🎬</div>`}
+      </div>
+      <div class="video-info">
+        <div class="video-title">${escHtml(label)}${isGif ? ' (GIF)' : ''}</div>
+        <div class="video-meta">
+          ${dur  ? `<span class="highlight">${escHtml(dur)}</span>` : ''}
+          ${brkbps ? `<span>${escHtml(brkbps)}</span>` : ''}
+          ${size ? `<span>${escHtml(size)}</span>` : ''}
+        </div>
+        <div class="dl-controls">
+          <button class="dl-btn-lg${v.downloaded ? ' downloaded' : ''}"
+                  id="dlbtn-${vi}"
+                  ${v.downloaded ? 'disabled' : ''}>
+            ${v.downloaded ? '已下载' : '下载'}
+          </button>
+          <div class="prog-wrap-lg" id="prog-${vi}" ${v.downloaded ? '' : 'hidden'}>
+            <div class="prog-track">
+              <div class="prog-bar${v.downloaded ? ' done' : ''}"
+                   style="${v.downloaded ? 'width:100%' : ''}"></div>
+            </div>
+            <span class="prog-text">${v.downloaded ? '已下载' : '0%'}</span>
+          </div>
+        </div>
+      </div>
+    `;
+    list.appendChild(item);
+
+    if (!v.downloaded) {
+      const btn  = item.querySelector(`#dlbtn-${vi}`);
+      const prog = item.querySelector(`#prog-${vi}`);
+      btn.addEventListener('click', () => startDownload(btn, prog, tweet, vi));
+    }
+  });
+}
+
+// ─── 推文信息渲染 ────────────────────────────────────────────────────────────
+function renderTweet(tweet) {
+  document.getElementById('tweet-author').textContent = tweet.name || tweet.user;
+  const snEl = document.getElementById('tweet-sn');
+  snEl.textContent = '@' + tweet.user;
+  snEl.href = `https://x.com/${encodeURIComponent(tweet.user)}`;
+  document.getElementById('tweet-date').textContent = tweet.created_at || '';
+  document.getElementById('tweet-text').textContent = tweet.text || '';
+  const linkEl = document.getElementById('tweet-link');
+  linkEl.href = tweet.url || `https://x.com/${tweet.user}/status/${tweet.id}`;
+
+  renderVideos(tweet);
+  document.getElementById('result-area').hidden = false;
+}
+
+// ─── 表单提交 ────────────────────────────────────────────────────────────────
+document.getElementById('url-form').addEventListener('submit', async e => {
+  e.preventDefault();
+
+  const urlVal  = document.getElementById('url-input').value.trim();
+  const errEl   = document.getElementById('msg-error');
+  const loading = document.getElementById('loading-area');
+  const result  = document.getElementById('result-area');
+  const btn     = document.getElementById('fetch-btn');
+
+  errEl.hidden  = true;
+  result.hidden = true;
+  loading.hidden = false;
+  btn.disabled  = true;
+
+  try {
+    const res = await fetch('/api/tweet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: urlVal }),
+    });
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      errEl.textContent = data.error || `请求失败 (HTTP ${res.status})`;
+      errEl.hidden = false;
+    } else {
+      renderTweet(data.tweet);
+    }
+  } catch (err) {
+    errEl.textContent = '网络错误，请检查连接后重试。';
+    errEl.hidden = false;
+  } finally {
+    loading.hidden = true;
+    btn.disabled = false;
+  }
+});
+</script>
+
+</body>
+</html>

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # conftest.py 已设置环境变量，可直接导入
 import app as flask_app
-from app import _safe_segment, _safe_filename, mark_downloaded
+from app import _safe_segment, _safe_filename, mark_downloaded, _parse_tweet_url
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -941,3 +941,141 @@ class TestTimelineProgressRoute:
     def test_response_has_no_cache_header(self, client):
         resp = client.get("/timeline/progress/any-id")
         assert resp.headers.get("Cache-Control") == "no-cache"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _parse_tweet_url()
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestParseTweetUrl:
+    @pytest.mark.parametrize("url,expected_user,expected_id", [
+        ("https://x.com/alice/status/1234567890",   "alice", "1234567890"),
+        ("https://www.x.com/bob/status/9999",       "bob",   "9999"),
+        # 带查询参数和片段
+        ("https://x.com/carol/status/111?s=20",     "carol", "111"),
+        ("https://x.com/dave/status/222#anchor",    "dave",  "222"),
+        # 路径有更多段（如 /photo/1）
+        ("https://x.com/eve/status/333/photo/1",    "eve",   "333"),
+    ])
+    def test_valid_urls(self, url, expected_user, expected_id):
+        screen_name, tweet_id = _parse_tweet_url(url)
+        assert screen_name == expected_user
+        assert tweet_id == expected_id
+
+    @pytest.mark.parametrize("url", [
+        "",                                              # 空字符串
+        "not-a-url",                                     # 不是 URL
+        "https://twitter.com/alice/status/123",          # 非 x.com 域名
+        "https://evil.com/alice/status/123",             # 非 x.com 域名
+        "https://x.com/alice",                           # 缺少 /status/
+        "https://x.com/alice/status",                    # 缺少 ID
+        "https://x.com/alice/status/notanumber",         # ID 不是数字
+        "https://x.com/alice/follow",                    # 非 status 路径
+    ])
+    def test_invalid_urls_return_none_none(self, url):
+        screen_name, tweet_id = _parse_tweet_url(url)
+        assert screen_name is None
+        assert tweet_id is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /downloader
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDownloaderRoute:
+    def test_requires_login(self, app):
+        with app.test_client() as c:
+            resp = c.get("/downloader")
+        assert resp.status_code == 302
+        assert "/login" in resp.headers["Location"]
+
+    def test_renders_page_when_logged_in(self, client):
+        resp = client.get("/downloader")
+        assert resp.status_code == 200
+        # 页面应包含"下载器"字样（UTF-8 编码）
+        assert "下载器".encode("utf-8") in resp.data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /api/tweet
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestApiTweetRoute:
+    def _post(self, client, url=""):
+        return client.post(
+            "/api/tweet",
+            data=__import__("json").dumps({"url": url}),
+            content_type="application/json",
+        )
+
+    def test_requires_login(self, app):
+        with app.test_client() as c:
+            resp = c.post("/api/tweet",
+                          data=__import__("json").dumps({"url": "https://x.com/u/status/1"}),
+                          content_type="application/json")
+        assert resp.status_code == 302
+
+    def test_missing_url_returns_400(self, client):
+        resp = client.post("/api/tweet",
+                           data=__import__("json").dumps({}),
+                           content_type="application/json")
+        assert resp.status_code == 400
+        assert "missing url" in resp.get_json().get("error", "")
+
+    def test_empty_url_returns_400(self, client):
+        resp = self._post(client, url="")
+        assert resp.status_code == 400
+
+    def test_invalid_url_returns_400(self, client):
+        resp = self._post(client, url="https://twitter.com/alice/status/123")
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert "error" in data
+
+    def test_api_failure_returns_404(self, client, monkeypatch):
+        """get_tweet_by_id 返回 None 时应响应 404。"""
+        monkeypatch.setattr(flask_app, "get_tweet_by_id", lambda tid: None)
+        resp = self._post(client, url="https://x.com/alice/status/9999")
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert "error" in data
+
+    def test_success_returns_tweet(self, client, monkeypatch):
+        """get_tweet_by_id 返回推文时响应 200 并包含 tweet 字段。"""
+        fake_tweet = {
+            "id": "9999", "user": "alice", "name": "Alice",
+            "text": "hello", "created_at": "2024-01-01",
+            "likes": 0, "retweets": 0, "replies": 0,
+            "url": "https://x.com/alice/status/9999",
+            "videos": [],
+        }
+        monkeypatch.setattr(flask_app, "get_tweet_by_id", lambda tid: fake_tweet)
+        resp = self._post(client, url="https://x.com/alice/status/9999")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "tweet" in data
+        assert data["tweet"]["id"] == "9999"
+        assert data["tweet"]["user"] == "alice"
+
+    def test_success_calls_mark_downloaded(self, client, monkeypatch):
+        """成功后应调用 mark_downloaded 标记已下载状态。"""
+        fake_tweet = {
+            "id": "8888", "user": "bob", "name": "Bob",
+            "text": "test", "created_at": "2024-01-01",
+            "likes": 0, "retweets": 0, "replies": 0,
+            "url": "https://x.com/bob/status/8888",
+            "videos": [{"variants": []}],
+        }
+        monkeypatch.setattr(flask_app, "get_tweet_by_id", lambda tid: fake_tweet)
+        called_with = []
+        original_mark = flask_app.mark_downloaded
+        monkeypatch.setattr(flask_app, "mark_downloaded",
+                            lambda tweets: called_with.extend(tweets) or tweets)
+        resp = self._post(client, url="https://x.com/bob/status/8888")
+        assert resp.status_code == 200
+        assert any(t["id"] == "8888" for t in called_with)
+
+    def test_no_json_body_returns_400(self, client):
+        """无请求体时应返回 400。"""
+        resp = client.post("/api/tweet", data="", content_type="application/json")
+        assert resp.status_code == 400

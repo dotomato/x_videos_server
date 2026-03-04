@@ -719,3 +719,130 @@ class TestPrintTweetsHelpers:
         xt.print_tweets([self._make_tweet()])
         out = capsys.readouterr().out
         assert "❌" in out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_tweet_detail_query_id() / get_tweet_by_id()
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGetTweetDetailQueryId:
+    def test_returns_fallback_when_cache_empty(self, tmp_path, monkeypatch):
+        """缓存中无值时应返回内置的 fallback queryId。"""
+        monkeypatch.setattr(xt, "CACHE_FILE", tmp_path / "cache.json")
+        qid = xt.get_tweet_detail_query_id()
+        assert qid == xt.FALLBACK_TWEET_DETAIL_QUERY_ID
+
+    def test_returns_cached_value_when_present(self, tmp_path, monkeypatch):
+        """缓存命中时应返回缓存中的 queryId。"""
+        cache_file = tmp_path / "cache.json"
+        cache_file.write_text(
+            json.dumps({xt._TWEET_DETAIL_QUERY_ID_CACHE_KEY: "cached_qid_123"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(xt, "CACHE_FILE", cache_file)
+        qid = xt.get_tweet_detail_query_id()
+        assert qid == "cached_qid_123"
+
+    def test_fallback_is_non_empty_string(self):
+        assert isinstance(xt.FALLBACK_TWEET_DETAIL_QUERY_ID, str)
+        assert len(xt.FALLBACK_TWEET_DETAIL_QUERY_ID) > 0
+
+
+class TestGetTweetById:
+    """mock httpx.Client，验证 get_tweet_by_id() 的解析和错误处理。"""
+
+    def _make_response(self, tweet_id="999", screen_name="alice"):
+        """构造一个最小化的 TweetDetail API 响应。"""
+        entry = _make_tweet_entry(tweet_id=tweet_id, screen_name=screen_name)
+        return {
+            "data": {
+                "threaded_conversation_with_injections_v2": {
+                    "instructions": [
+                        {
+                            "type": "TimelineAddEntries",
+                            "entries": [entry],
+                        }
+                    ]
+                }
+            }
+        }
+
+    def _make_fake_client(self, response_data=None, status_code=200):
+        """返回一个 mock httpx.Client 工厂（接受任意构造参数）。"""
+        _status = status_code
+        _data = response_data or {}
+
+        class FakeResp:
+            status_code = _status
+
+            def json(self):
+                return _data
+
+        class FakeClient:
+            def __init__(self, *a, **kw):  # 接受 cookies/headers/timeout 等参数
+                pass
+
+            def get(self, url, **kwargs):
+                return FakeResp()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        return FakeClient
+
+    def test_returns_tweet_matching_id(self, monkeypatch):
+        """正常情况下应返回匹配 tweet_id 的推文。"""
+        resp = self._make_response(tweet_id="999", screen_name="bob")
+        fake_cls = self._make_fake_client(response_data=resp, status_code=200)
+        monkeypatch.setattr(xt.httpx, "Client", fake_cls)
+        tweet = xt.get_tweet_by_id("999")
+        assert tweet is not None
+        assert tweet["id"] == "999"
+        assert tweet["user"] == "bob"
+
+    def test_returns_first_tweet_when_id_not_found(self, monkeypatch):
+        """推文列表中无匹配 ID 时，应返回第一条推文（线程场景）。"""
+        resp = self._make_response(tweet_id="111", screen_name="carol")
+        fake_cls = self._make_fake_client(response_data=resp, status_code=200)
+        monkeypatch.setattr(xt.httpx, "Client", fake_cls)
+        # 查询 ID 999，但响应中只有 111
+        tweet = xt.get_tweet_by_id("999")
+        assert tweet is not None
+        assert tweet["id"] == "111"
+
+    def test_returns_none_on_http_error(self, monkeypatch):
+        """HTTP 非 200 响应时应返回 None。"""
+        fake_cls = self._make_fake_client(response_data={}, status_code=403)
+        monkeypatch.setattr(xt.httpx, "Client", fake_cls)
+        assert xt.get_tweet_by_id("123") is None
+
+    def test_returns_none_on_empty_instructions(self, monkeypatch):
+        """instructions 为空时应返回 None。"""
+        resp = {
+            "data": {
+                "threaded_conversation_with_injections_v2": {
+                    "instructions": []
+                }
+            }
+        }
+        fake_cls = self._make_fake_client(response_data=resp, status_code=200)
+        monkeypatch.setattr(xt.httpx, "Client", fake_cls)
+        assert xt.get_tweet_by_id("123") is None
+
+    def test_returns_none_on_network_exception(self, monkeypatch):
+        """网络异常时应捕获异常并返回 None。"""
+        class RaisingClient:
+            def get(self, url, **kwargs):
+                raise ConnectionError("network error")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        monkeypatch.setattr(xt.httpx, "Client", lambda *a, **kw: RaisingClient())
+        assert xt.get_tweet_by_id("123") is None

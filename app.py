@@ -19,7 +19,11 @@ from flask import (
     session, redirect, url_for, request, Response, jsonify
 )
 import cv2
-from x_timeline import get_home_timeline, get_home_timeline_with_cursor, get_user_id, get_user_timeline_with_cursor, DOWNLOAD_DIR
+from x_timeline import (
+    get_home_timeline, get_home_timeline_with_cursor,
+    get_user_id, get_user_timeline_with_cursor,
+    get_tweet_by_id, DOWNLOAD_DIR,
+)
 
 # ─── 日志 ──────────────────────────────────────────────────────────────────────
 
@@ -184,6 +188,25 @@ def _safe_filename(value: str) -> bool:
         return False
     stem, _, ext = value.rpartition(".")
     return _safe_segment(stem) and ext.lower() in ("mp4", "jpg", "ico")
+
+
+def _parse_tweet_url(url: str) -> tuple[str | None, str | None]:
+    """从 x.com 推文 URL 中提取 (screen_name, tweet_id)。
+    支持 https://x.com/{user}/status/{id} 格式，仅允许 x.com 域名。
+    返回 (screen_name, tweet_id) 或 (None, None)。
+    """
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        if parsed.netloc not in ("x.com", "www.x.com"):
+            return None, None
+        parts = [p for p in parsed.path.split("/") if p]
+        # 路径格式: /{screen_name}/status/{tweet_id}
+        if len(parts) >= 3 and parts[1] == "status" and parts[2].isdigit():
+            return parts[0], parts[2]
+    except Exception:
+        pass
+    return None, None
 
 
 # ─── 缩略图 ───────────────────────────────────────────────────────────────────
@@ -495,6 +518,39 @@ def timeline_progress(task_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ─── 下载器 ───────────────────────────────────────────────────────────────────
+
+@app.route("/downloader")
+@login_required
+def downloader():
+    """单条推文视频下载器页面。"""
+    return render_template("downloader.html")
+
+
+@app.route("/api/tweet", methods=["POST"])
+@login_required
+def api_get_tweet():
+    """接收推文 URL，返回推文数据（含视频列表和已下载标记）。
+    请求体：{"url": "https://x.com/user/status/..."}
+    响应：{"tweet": {...}} 或 {"error": "..."}
+    """
+    data = request.get_json(silent=True) or {}
+    tweet_url = data.get("url", "").strip()
+    if not tweet_url:
+        return jsonify({"error": "missing url"}), 400
+
+    _, tweet_id = _parse_tweet_url(tweet_url)
+    if not tweet_id:
+        return jsonify({"error": "无效的推文 URL，仅支持 https://x.com/user/status/ID 格式"}), 400
+
+    tweet = get_tweet_by_id(tweet_id)
+    if not tweet:
+        return jsonify({"error": "无法获取推文，请确认 URL 是否正确或推文是否公开可见"}), 404
+
+    mark_downloaded([tweet])
+    return jsonify({"tweet": tweet})
 
 
 # ─── 启动 ─────────────────────────────────────────────────────────────────────

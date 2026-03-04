@@ -113,6 +113,51 @@ python3.11 manage_users.py passwd <用户名>    # 修改密码
 python3.11 manage_users.py del <用户名>       # 删除用户
 ```
 
+## 部署
+
+### 服务器信息
+
+| 项目 | 值 |
+|---|---|
+| 主机 | `h1.tomatochen.top` |
+| 用户 | `ubuntu` |
+| 端口 | `22` |
+| 项目路径 | `~/x_videos_server` |
+| systemd 服务 | `x_videos_server.service` |
+
+### 使用部署脚本
+
+```bash
+# 仅部署（不提交，适合已提交的情况）
+./deploy.sh
+
+# 提交当前变更并部署
+./deploy.sh "提交说明"
+```
+
+脚本会依次执行：
+1. （可选）`git add -A && git commit`
+2. `git push origin main`
+3. 服务器上 `git pull origin main`
+4. `sudo systemctl restart x_videos_server`
+5. 检查服务状态，异常时打印最近 20 行日志
+
+### 手动部署
+
+```bash
+# 本地推送
+git push origin main
+
+# 登录服务器
+ssh -p 22 ubuntu@h1.tomatochen.top
+
+# 服务器上执行
+cd ~/x_videos_server
+git pull origin main
+sudo systemctl restart x_videos_server
+sudo systemctl is-active x_videos_server
+```
+
 ## 注意事项
 
 - `users.json` 和 `videos/` 目录已通过 `.gitignore` 排除在版本控制之外

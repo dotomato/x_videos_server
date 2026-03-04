@@ -145,3 +145,24 @@ Example: `videos/Uaijie/2029001949665001594_0.mp4`
   }
 }
 ```
+
+## Deployment
+
+- **Server**: `ubuntu@h1.tomatochen.top:22`
+- **Project path**: `~/x_videos_server`
+- **Service**: `x_videos_server.service` (systemd)
+
+### Deploy script (`deploy.sh`)
+
+```bash
+./deploy.sh              # push + remote pull + restart
+./deploy.sh "msg"        # commit locally, then push + deploy
+```
+
+### Manual steps
+
+```bash
+git push origin main
+ssh -p 22 ubuntu@h1.tomatochen.top \
+  "cd ~/x_videos_server && git pull origin main && sudo systemctl restart x_videos_server"
+```

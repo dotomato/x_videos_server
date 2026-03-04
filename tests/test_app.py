@@ -471,3 +471,473 @@ class TestSecurityHeaders:
         csp = resp.headers.get("Content-Security-Policy", "")
         assert "default-src" in csp
         assert "frame-ancestors" in csp
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# load_config() / SECRET_KEY 初始化
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLoadConfig:
+    def test_loads_users_json_successfully(self, tmp_path, monkeypatch):
+        cfg = {"secret_key": "s3cr3t", "users": {"alice": "hash"}}
+        cfg_file = tmp_path / "users.json"
+        cfg_file.write_text(json.dumps(cfg), encoding="utf-8")
+        monkeypatch.setattr(flask_app, "USERS_FILE", cfg_file)
+        result = flask_app.load_config()
+        assert result["secret_key"] == "s3cr3t"
+        assert "alice" in result["users"]
+
+    def test_missing_file_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(flask_app, "USERS_FILE", tmp_path / "nonexistent.json")
+        with pytest.raises(FileNotFoundError):
+            flask_app.load_config()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# check_password() — 实际 bcrypt 验证
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCheckPassword:
+    def _make_users_file(self, tmp_path, username, raw_password):
+        import bcrypt as _bcrypt
+        hashed = _bcrypt.hashpw(raw_password.encode(), _bcrypt.gensalt()).decode()
+        cfg = {"secret_key": "x", "users": {username: hashed}}
+        f = tmp_path / "users.json"
+        f.write_text(json.dumps(cfg), encoding="utf-8")
+        return f
+
+    def test_correct_password_returns_true(self, tmp_path, monkeypatch):
+        f = self._make_users_file(tmp_path, "alice", "s3cr3t")
+        monkeypatch.setattr(flask_app, "USERS_FILE", f)
+        assert flask_app.check_password("alice", "s3cr3t") is True
+
+    def test_wrong_password_returns_false(self, tmp_path, monkeypatch):
+        f = self._make_users_file(tmp_path, "alice", "s3cr3t")
+        monkeypatch.setattr(flask_app, "USERS_FILE", f)
+        assert flask_app.check_password("alice", "wrong") is False
+
+    def test_unknown_user_returns_false(self, tmp_path, monkeypatch):
+        f = self._make_users_file(tmp_path, "alice", "s3cr3t")
+        monkeypatch.setattr(flask_app, "USERS_FILE", f)
+        assert flask_app.check_password("nobody", "s3cr3t") is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ensure_thumbnail() — mock OpenCV
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEnsureThumbnail:
+    def test_existing_jpg_returned_immediately(self, tmp_path, monkeypatch):
+        mp4 = tmp_path / "vid_0.mp4"
+        jpg = tmp_path / "vid_0.jpg"
+        mp4.write_bytes(b"fake")
+        jpg.write_bytes(b"thumb")
+        called = {"v": False}
+        class FakeCap:
+            def read(self): called["v"] = True; return (True, None)
+            def release(self): pass
+        monkeypatch.setattr(flask_app.cv2, "VideoCapture", lambda p: FakeCap())
+        result = flask_app.ensure_thumbnail(mp4)
+        assert result == jpg
+        assert called["v"] is False
+
+    def test_generates_jpg_when_missing(self, tmp_path, monkeypatch):
+        mp4 = tmp_path / "vid_0.mp4"
+        mp4.write_bytes(b"fake")
+        class FakeCap:
+            def read(self): return (True, "fake_frame")
+            def release(self): pass
+        written_path = {}
+        def fake_imwrite(path, frame):
+            written_path["p"] = path
+            Path(path).write_bytes(b"jpg")
+            return True
+        monkeypatch.setattr(flask_app.cv2, "VideoCapture", lambda p: FakeCap())
+        monkeypatch.setattr(flask_app.cv2, "imwrite", fake_imwrite)
+        result = flask_app.ensure_thumbnail(mp4)
+        assert result is not None
+        assert result.suffix == ".jpg"
+
+    def test_returns_none_when_frame_read_fails(self, tmp_path, monkeypatch):
+        mp4 = tmp_path / "vid_0.mp4"
+        mp4.write_bytes(b"fake")
+        class FakeCap:
+            def read(self): return (False, None)
+            def release(self): pass
+        monkeypatch.setattr(flask_app.cv2, "VideoCapture", lambda p: FakeCap())
+        result = flask_app.ensure_thumbnail(mp4)
+        assert result is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_all_videos() / get_latest_videos() / get_latest_by_author() / get_author_videos()
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVideoScanning:
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_path, monkeypatch):
+        self.vdir = tmp_path / "videos"
+        self.vdir.mkdir()
+        monkeypatch.setattr(flask_app, "VIDEOS_DIR", self.vdir)
+        monkeypatch.setattr(flask_app, "ensure_thumbnail",
+                            lambda p: p.with_suffix(".jpg") if p.with_suffix(".jpg").exists() else None)
+
+    def _make_video(self, author, stem, with_thumb=True):
+        d = self.vdir / author
+        d.mkdir(exist_ok=True)
+        mp4 = d / f"{stem}.mp4"
+        mp4.write_bytes(b"fake")
+        if with_thumb:
+            (d / f"{stem}.jpg").write_bytes(b"thumb")
+        return mp4
+
+    def test_empty_dir_returns_empty(self):
+        assert flask_app.get_all_videos() == []
+
+    def test_nonexistent_dir_returns_empty(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(flask_app, "VIDEOS_DIR", tmp_path / "no_such_dir")
+        assert flask_app.get_all_videos() == []
+
+    def test_single_video_returned(self):
+        self._make_video("alice", "tweet_0")
+        videos = flask_app.get_all_videos()
+        assert len(videos) == 1
+        assert videos[0]["author"] == "alice"
+        assert videos[0]["mp4"] == "tweet_0.mp4"
+        assert videos[0]["tweet_id"] == "tweet"
+        assert videos[0]["index"] == 0
+
+    def test_multiple_authors_all_returned(self):
+        self._make_video("alice", "t1_0")
+        self._make_video("bob", "t2_1")
+        videos = flask_app.get_all_videos()
+        authors = {v["author"] for v in videos}
+        assert authors == {"alice", "bob"}
+
+    def test_sorted_by_mtime_descending(self):
+        import time
+        self._make_video("alice", "old_0")
+        time.sleep(0.05)
+        self._make_video("bob", "new_0")
+        videos = flask_app.get_all_videos()
+        assert videos[0]["author"] == "bob"
+        assert videos[1]["author"] == "alice"
+
+    def test_no_thumb_sets_jpg_none(self):
+        self._make_video("alice", "novid_0", with_thumb=False)
+        videos = flask_app.get_all_videos()
+        assert videos[0]["jpg"] is None
+
+    def test_get_latest_videos_limits_count(self):
+        import time
+        for i in range(5):
+            self._make_video("alice", f"t{i}_0")
+            time.sleep(0.01)
+        result = flask_app.get_latest_videos(3)
+        assert len(result) == 3
+
+    def test_get_latest_by_author_one_per_author(self):
+        self._make_video("alice", "t1_0")
+        self._make_video("alice", "t2_0")
+        self._make_video("bob", "t3_0")
+        by_author = flask_app.get_latest_by_author()
+        authors = [v["author"] for v in by_author]
+        assert authors.count("alice") == 1
+        assert authors.count("bob") == 1
+
+    def test_get_latest_by_author_sorted_alphabetically(self):
+        self._make_video("zebra", "z_0")
+        self._make_video("apple", "a_0")
+        by_author = flask_app.get_latest_by_author()
+        assert by_author[0]["author"] == "apple"
+        assert by_author[1]["author"] == "zebra"
+
+    def test_get_author_videos_filters_correctly(self):
+        self._make_video("alice", "ta_0")
+        self._make_video("bob", "tb_0")
+        result = flask_app.get_author_videos("alice")
+        assert all(v["author"] == "alice" for v in result)
+        assert len(result) == 1
+
+    def test_get_author_videos_empty_for_unknown(self):
+        self._make_video("alice", "ta_0")
+        assert flask_app.get_author_videos("nobody") == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _set_task() — 线程安全任务状态管理
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSetTask:
+    def test_creates_new_task(self, monkeypatch):
+        tasks = {}
+        monkeypatch.setattr(flask_app, "_download_tasks", tasks)
+        flask_app._set_task("t1", status="pending", progress=0)
+        assert tasks["t1"] == {"status": "pending", "progress": 0}
+
+    def test_updates_existing_task(self, monkeypatch):
+        tasks = {"t1": {"status": "pending", "progress": 0}}
+        monkeypatch.setattr(flask_app, "_download_tasks", tasks)
+        flask_app._set_task("t1", progress=50)
+        assert tasks["t1"]["progress"] == 50
+        assert tasks["t1"]["status"] == "pending"
+
+    def test_concurrent_updates_safe(self, monkeypatch):
+        import threading
+        tasks = {}
+        monkeypatch.setattr(flask_app, "_download_tasks", tasks)
+        errors = []
+
+        def worker(i):
+            try:
+                flask_app._set_task(f"t{i}", val=i)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        assert not errors
+        assert len(tasks) == 20
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /login, POST /login 补充场景
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLoginRoute:
+    def test_get_login_renders_form(self, app):
+        with app.test_client() as c:
+            resp = c.get("/login")
+        assert resp.status_code == 200
+
+    def test_post_login_sets_session(self, app, monkeypatch):
+        monkeypatch.setattr(flask_app, "_login_attempts", {})
+        monkeypatch.setattr(flask_app, "check_password", lambda u, p: True)
+        with app.test_client() as c:
+            resp = c.post("/login", data={"username": "alice", "password": "pw"})
+            assert resp.status_code == 303
+            with c.session_transaction() as sess:
+                assert sess.get("logged_in") is True
+                assert sess.get("username") == "alice"
+
+    def test_post_login_wrong_credentials_shows_error(self, app, monkeypatch):
+        monkeypatch.setattr(flask_app, "_login_attempts", {})
+        monkeypatch.setattr(flask_app, "check_password", lambda u, p: False)
+        with app.test_client() as c:
+            resp = c.post("/login", data={"username": "alice", "password": "bad"})
+        assert resp.status_code == 200
+        assert "错误" in resp.data.decode("utf-8")
+
+    def test_get_logout_clears_session(self, client):
+        resp = client.get("/logout", follow_redirects=False)
+        assert resp.status_code == 302
+        with client.session_transaction() as sess:
+            assert not sess.get("logged_in")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET / (index)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestIndexRoute:
+    def test_renders_with_empty_videos_dir(self, client, videos_dir):
+        resp = client.get("/")
+        assert resp.status_code == 200
+
+    def test_renders_with_videos(self, client, videos_dir, monkeypatch):
+        author_dir = videos_dir / "alice"
+        author_dir.mkdir()
+        (author_dir / "tweet_0.mp4").write_bytes(b"fake")
+        (author_dir / "tweet_0.jpg").write_bytes(b"thumb")
+        monkeypatch.setattr(flask_app, "ensure_thumbnail",
+                            lambda p: p.with_suffix(".jpg"))
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert b"alice" in resp.data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /author/<name> — 有视频的成功场景
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAuthorRouteWithVideos:
+    def test_valid_author_with_videos_returns_200(self, client, videos_dir, monkeypatch):
+        author_dir = videos_dir / "alice"
+        author_dir.mkdir()
+        (author_dir / "tweet_0.mp4").write_bytes(b"fake")
+        (author_dir / "tweet_0.jpg").write_bytes(b"thumb")
+        monkeypatch.setattr(flask_app, "ensure_thumbnail",
+                            lambda p: p.with_suffix(".jpg"))
+        resp = client.get("/author/alice")
+        assert resp.status_code == 200
+        assert b"alice" in resp.data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /play — referrer 场景
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPlayRouteReferrer:
+    def test_play_uses_referrer_as_back(self, client, videos_dir):
+        author_dir = videos_dir / "alice"
+        author_dir.mkdir()
+        (author_dir / "tweet_0.mp4").write_bytes(b"fake")
+        resp = client.get("/play/alice/tweet_0.mp4",
+                          headers={"Referer": "http://localhost/author/alice"})
+        assert resp.status_code == 200
+        assert b"alice" in resp.data
+
+    def test_play_falls_back_to_author_url_without_referrer(self, client, videos_dir):
+        author_dir = videos_dir / "alice"
+        author_dir.mkdir()
+        (author_dir / "tweet_0.mp4").write_bytes(b"fake")
+        resp = client.get("/play/alice/tweet_0.mp4")
+        assert resp.status_code == 200
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /timeline (mock API)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestTimelineRoute:
+    def test_timeline_renders(self, client, monkeypatch):
+        monkeypatch.setattr(flask_app, "get_home_timeline_with_cursor",
+                            lambda count: ([], None))
+        resp = client.get("/timeline")
+        assert resp.status_code == 200
+
+    def test_timeline_passes_tweets_to_template(self, client, monkeypatch):
+        tweet = {
+            "id": "1", "user": "alice", "name": "Alice",
+            "text": "hello", "created_at": "2024-01-01",
+            "likes": 0, "retweets": 0, "replies": 0,
+            "url": "https://x.com/alice/status/1",
+            "videos": [],
+        }
+        monkeypatch.setattr(flask_app, "get_home_timeline_with_cursor",
+                            lambda count: ([tweet], "next_cur"))
+        resp = client.get("/timeline")
+        assert resp.status_code == 200
+        assert b"alice" in resp.data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /user/<screen_name>/more
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestUserTimelineMoreRoute:
+    def test_invalid_screen_name_returns_400(self, client):
+        resp = client.post("/user/../evil/more",
+                           data=json.dumps({"cursor": "abc"}),
+                           content_type="application/json")
+        assert resp.status_code in (400, 404)
+
+    def test_missing_cursor_returns_400(self, client, monkeypatch):
+        monkeypatch.setattr(flask_app, "_user_id_cache", {"validuser": "123"})
+        resp = client.post("/user/validuser/more",
+                           data=json.dumps({}),
+                           content_type="application/json")
+        assert resp.status_code == 400
+
+    def test_unknown_user_returns_404(self, client, monkeypatch):
+        monkeypatch.setattr(flask_app, "_user_id_cache", {})
+        monkeypatch.setattr(flask_app, "get_user_id", lambda sn: None)
+        resp = client.post("/user/nobody/more",
+                           data=json.dumps({"cursor": "abc"}),
+                           content_type="application/json")
+        assert resp.status_code == 404
+
+    def test_valid_request_returns_tweets(self, client, monkeypatch):
+        monkeypatch.setattr(flask_app, "_user_id_cache", {"alice": "999"})
+        monkeypatch.setattr(flask_app, "get_user_timeline_with_cursor",
+                            lambda uid, count, cursor: ([], None))
+        resp = client.post("/user/alice/more",
+                           data=json.dumps({"cursor": "some_cursor"}),
+                           content_type="application/json")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "tweets" in data
+        assert "next_cursor" in data
+
+    def test_user_id_cached_after_first_call(self, client, monkeypatch):
+        cache = {}
+        monkeypatch.setattr(flask_app, "_user_id_cache", cache)
+        monkeypatch.setattr(flask_app, "get_user_id", lambda sn: "uid_42")
+        monkeypatch.setattr(flask_app, "get_user_timeline_with_cursor",
+                            lambda uid, count, cursor: ([], None))
+        client.post("/user/newuser/more",
+                    data=json.dumps({"cursor": "c"}),
+                    content_type="application/json")
+        assert cache.get("newuser") == "uid_42"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /timeline/download
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestTimelineDownloadRoute:
+    def test_returns_task_id(self, client, monkeypatch):
+        started = {"v": False}
+        class FakeThread:
+            def __init__(self, target, args, daemon): pass
+            def start(self): started["v"] = True
+        monkeypatch.setattr(flask_app.threading, "Thread", FakeThread)
+        resp = client.post(
+            "/timeline/download",
+            data=json.dumps({
+                "user": "alice", "tweet_id": "123",
+                "video_url": "http://fake.url/v.mp4", "video_index": 0,
+            }),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "task_id" in data
+        assert len(data["task_id"]) == 36
+        assert started["v"] is True
+
+    def test_task_created_in_pending_state(self, client, monkeypatch):
+        tasks = {}
+        monkeypatch.setattr(flask_app, "_download_tasks", tasks)
+        class FakeThread:
+            def __init__(self, target, args, daemon): pass
+            def start(self): pass
+        monkeypatch.setattr(flask_app.threading, "Thread", FakeThread)
+        resp = client.post(
+            "/timeline/download",
+            data=json.dumps({
+                "user": "bob", "tweet_id": "456",
+                "video_url": "http://fake.url/v.mp4", "video_index": 0,
+            }),
+            content_type="application/json",
+        )
+        task_id = resp.get_json()["task_id"]
+        assert task_id in tasks
+        assert tasks[task_id]["status"] == "pending"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /timeline/progress/<task_id> — SSE
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestTimelineProgressRoute:
+    def test_unknown_task_returns_done_event(self, client):
+        resp = client.get("/timeline/progress/nonexistent-task-id")
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("text/event-stream")
+        body = resp.data.decode("utf-8")
+        assert "data:" in body
+        assert '"status"' in body
+
+    def test_completed_task_streams_done(self, client, monkeypatch):
+        tasks = {"task99": {"status": "done", "progress": 100, "total": 100, "done": True}}
+        monkeypatch.setattr(flask_app, "_download_tasks", tasks)
+        resp = client.get("/timeline/progress/task99")
+        assert resp.status_code == 200
+        body = resp.data.decode("utf-8")
+        assert "done" in body
+
+    def test_response_has_no_cache_header(self, client):
+        resp = client.get("/timeline/progress/any-id")
+        assert resp.headers.get("Cache-Control") == "no-cache"

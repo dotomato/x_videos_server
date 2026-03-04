@@ -443,3 +443,279 @@ class TestGetUserTweetsQueryId:
         cache_file.write_text(json.dumps({"query_id": "home_qid"}))
         monkeypatch.setattr(xt, "CACHE_FILE", cache_file)
         assert xt.get_user_tweets_query_id() == xt.FALLBACK_USER_TWEETS_QUERY_ID
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _require_env()
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRequireEnv:
+    def test_returns_value_when_set(self, monkeypatch):
+        monkeypatch.setenv("_TEST_VAR_XYZ", "hello")
+        assert xt._require_env("_TEST_VAR_XYZ") == "hello"
+
+    def test_raises_when_not_set(self, monkeypatch):
+        monkeypatch.delenv("_TEST_VAR_XYZ", raising=False)
+        with pytest.raises(RuntimeError, match="_TEST_VAR_XYZ"):
+            xt._require_env("_TEST_VAR_XYZ")
+
+    def test_raises_when_empty_string(self, monkeypatch):
+        monkeypatch.setenv("_TEST_VAR_XYZ", "")
+        with pytest.raises(RuntimeError):
+            xt._require_env("_TEST_VAR_XYZ")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# make_headers()
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestMakeHeaders:
+    def test_contains_required_fields(self):
+        headers = xt.make_headers()
+        assert "authorization" in headers
+        assert headers["authorization"].startswith("Bearer ")
+        assert "x-csrf-token" in headers
+        assert "x-twitter-auth-type" in headers
+        assert "x-client-uuid" in headers
+        assert "content-type" in headers
+
+    def test_each_call_generates_new_uuid(self):
+        h1 = xt.make_headers()
+        h2 = xt.make_headers()
+        assert h1["x-client-uuid"] != h2["x-client-uuid"]
+
+    def test_csrf_token_matches_ct0(self):
+        headers = xt.make_headers()
+        assert headers["x-csrf-token"] == xt.CT0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_user_id() — mock httpx
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGetUserId:
+    def _make_response(self, status_code, body):
+        """构造一个最小 httpx.Response 替身。"""
+        import httpx
+        resp = httpx.Response(status_code, content=json.dumps(body).encode())
+        return resp
+
+    def test_returns_rest_id_on_success(self, monkeypatch):
+        body = {"data": {"user": {"result": {"rest_id": "42"}}}}
+        resp = self._make_response(200, body)
+        monkeypatch.setattr(xt.httpx.Client, "__enter__",
+                            lambda self: self)
+        monkeypatch.setattr(xt.httpx.Client, "__exit__",
+                            lambda self, *a: None)
+        monkeypatch.setattr(xt.httpx.Client, "get",
+                            lambda self, url, params: resp)
+        result = xt.get_user_id("alice")
+        assert result == "42"
+
+    def test_returns_none_on_non_200(self, monkeypatch):
+        resp = self._make_response(404, {})
+        monkeypatch.setattr(xt.httpx.Client, "__enter__", lambda self: self)
+        monkeypatch.setattr(xt.httpx.Client, "__exit__", lambda self, *a: None)
+        monkeypatch.setattr(xt.httpx.Client, "get",
+                            lambda self, url, params: resp)
+        result = xt.get_user_id("nobody")
+        assert result is None
+
+    def test_returns_none_on_missing_key(self, monkeypatch):
+        body = {"data": {}}  # user key missing
+        resp = self._make_response(200, body)
+        monkeypatch.setattr(xt.httpx.Client, "__enter__", lambda self: self)
+        monkeypatch.setattr(xt.httpx.Client, "__exit__", lambda self, *a: None)
+        monkeypatch.setattr(xt.httpx.Client, "get",
+                            lambda self, url, params: resp)
+        result = xt.get_user_id("alice")
+        assert result is None
+
+    def test_returns_none_on_network_exception(self, monkeypatch):
+        def raise_error(self, url, params):
+            raise xt.httpx.NetworkError("connection refused")
+        monkeypatch.setattr(xt.httpx.Client, "__enter__", lambda self: self)
+        monkeypatch.setattr(xt.httpx.Client, "__exit__", lambda self, *a: None)
+        monkeypatch.setattr(xt.httpx.Client, "get", raise_error)
+        result = xt.get_user_id("alice")
+        assert result is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_home_timeline_with_cursor() — mock httpx
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGetHomeTimelineWithCursor:
+    def _make_response(self, status_code, body):
+        import httpx
+        return httpx.Response(status_code, content=json.dumps(body).encode())
+
+    def _patch_client(self, monkeypatch, resp):
+        monkeypatch.setattr(xt.httpx.Client, "__enter__", lambda self: self)
+        monkeypatch.setattr(xt.httpx.Client, "__exit__", lambda self, *a: None)
+        monkeypatch.setattr(xt.httpx.Client, "post",
+                            lambda self, url, json: resp)
+
+    def test_returns_empty_on_non_200(self, monkeypatch):
+        resp = self._make_response(401, {})
+        self._patch_client(monkeypatch, resp)
+        tweets, cursor = xt.get_home_timeline_with_cursor(count=5)
+        assert tweets == []
+        assert cursor is None
+
+    def test_returns_parsed_tweets_on_success(self, monkeypatch):
+        instructions = [{
+            "type": "TimelineAddEntries",
+            "entries": [{
+                "content": {
+                    "entryType": "TimelineTimelineItem",
+                    "itemContent": {
+                        "itemType": "TimelineTweet",
+                        "tweet_results": {"result": {
+                            "__typename": "Tweet",
+                            "legacy": {
+                                "id_str": "999",
+                                "full_text": "hi",
+                                "created_at": "Mon Jan 01 00:00:00 +0000 2024",
+                                "favorite_count": 0,
+                                "retweet_count": 0,
+                                "reply_count": 0,
+                            },
+                            "core": {"user_results": {"result": {
+                                "core": {"screen_name": "bob", "name": "Bob"},
+                                "legacy": {},
+                            }}},
+                        }},
+                    },
+                },
+            }],
+        }]
+        body = {"data": {"home": {"home_timeline_urt": {"instructions": instructions}}}}
+        resp = self._make_response(200, body)
+        self._patch_client(monkeypatch, resp)
+        tweets, cursor = xt.get_home_timeline_with_cursor(count=5)
+        assert len(tweets) == 1
+        assert tweets[0]["id"] == "999"
+        assert tweets[0]["user"] == "bob"
+
+    def test_passes_cursor_in_variables(self, monkeypatch):
+        captured = {}
+        import httpx
+
+        class FakeClient:
+            cookies = {}
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def post(self, url, json):
+                captured["variables"] = json.get("variables", {})
+                return httpx.Response(200, content=b'{"data":{"home":{"home_timeline_urt":{"instructions":[]}}}}')
+
+        monkeypatch.setattr(xt, "httpx", type("httpx", (), {"Client": lambda *a, **kw: FakeClient()})())
+        xt.get_home_timeline_with_cursor(count=5, cursor="abc123")
+        assert captured.get("variables", {}).get("cursor") == "abc123"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_user_timeline_with_cursor() — mock httpx
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGetUserTimelineWithCursor:
+    def _make_response(self, status_code, body):
+        import httpx
+        return httpx.Response(status_code, content=json.dumps(body).encode())
+
+    def test_returns_empty_on_non_200(self, monkeypatch):
+        monkeypatch.setattr(xt.httpx.Client, "__enter__", lambda self: self)
+        monkeypatch.setattr(xt.httpx.Client, "__exit__", lambda self, *a: None)
+        monkeypatch.setattr(xt.httpx.Client, "get",
+                            lambda self, url, params: self._make_response(500, {}))
+        # patch to avoid actual HTTP
+        def fake_get(self2, url, params):
+            return self._make_response(500, {})
+        monkeypatch.setattr(xt.httpx.Client, "get", fake_get)
+        tweets, cursor = xt.get_user_timeline_with_cursor("uid123", count=5)
+        assert tweets == []
+        assert cursor is None
+
+    def test_returns_parsed_tweets_on_success(self, monkeypatch):
+        instructions = [{
+            "type": "TimelineAddEntries",
+            "entries": [{
+                "content": {
+                    "entryType": "TimelineTimelineItem",
+                    "itemContent": {
+                        "itemType": "TimelineTweet",
+                        "tweet_results": {"result": {
+                            "__typename": "Tweet",
+                            "legacy": {
+                                "id_str": "77",
+                                "full_text": "user tweet",
+                                "created_at": "Mon Jan 01 00:00:00 +0000 2024",
+                                "favorite_count": 5,
+                                "retweet_count": 1,
+                                "reply_count": 0,
+                            },
+                            "core": {"user_results": {"result": {
+                                "core": {"screen_name": "charlie", "name": "Charlie"},
+                                "legacy": {},
+                            }}},
+                        }},
+                    },
+                },
+            }],
+        }]
+        body = {"data": {"user": {"result": {
+            "timeline_v2": {"timeline": {"instructions": instructions}}
+        }}}}
+        resp = self._make_response(200, body)
+        monkeypatch.setattr(xt.httpx.Client, "__enter__", lambda self: self)
+        monkeypatch.setattr(xt.httpx.Client, "__exit__", lambda self, *a: None)
+        monkeypatch.setattr(xt.httpx.Client, "get",
+                            lambda self, url, params: resp)
+        tweets, cursor = xt.get_user_timeline_with_cursor("uid123", count=5)
+        assert len(tweets) == 1
+        assert tweets[0]["user"] == "charlie"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# print_tweets() 内部辅助函数 pad() 和 truncate()
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPrintTweetsHelpers:
+    """通过间接调用 print_tweets() 验证 pad/truncate 的行为。"""
+
+    def _make_tweet(self, text="hello"):
+        return {
+            "id": "1", "user": "alice", "name": "Alice",
+            "text": text, "created_at": "2024-01-01",
+            "likes": 0, "retweets": 0, "replies": 0,
+            "url": "u", "videos": [],
+        }
+
+    def test_print_tweets_empty_list(self, capsys):
+        xt.print_tweets([])
+        out = capsys.readouterr().out
+        assert "没有获取到推文" in out
+
+    def test_print_tweets_outputs_author(self, capsys):
+        xt.print_tweets([self._make_tweet()])
+        out = capsys.readouterr().out
+        assert "alice" in out
+
+    def test_long_text_is_truncated_in_output(self, capsys):
+        long_text = "中文" * 40  # 80 个中文字符，超过列宽
+        xt.print_tweets([self._make_tweet(long_text)])
+        out = capsys.readouterr().out
+        assert "…" in out
+
+    def test_tweet_with_video_shows_checkmark(self, capsys):
+        tweet = self._make_tweet()
+        tweet["videos"] = [{"duration_ms": 5000, "variants": []}]
+        xt.print_tweets([tweet])
+        out = capsys.readouterr().out
+        assert "✅" in out
+
+    def test_tweet_without_video_shows_cross(self, capsys):
+        xt.print_tweets([self._make_tweet()])
+        out = capsys.readouterr().out
+        assert "❌" in out

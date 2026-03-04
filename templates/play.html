@@ -12,6 +12,7 @@
 <header>
   <a class="back-btn" href="{{ back }}">← 返回</a>
   <a class="author-link" href="/author/{{ author }}">@<span>{{ author }}</span></a>
+  <button class="delete-btn" id="delete-btn" data-author="{{ author }}" data-filename="{{ filename }}">删除视频</button>
   <a class="logout" href="/logout">退出登录</a>
 </header>
 
@@ -20,6 +21,29 @@
     您的浏览器不支持 video 标签。
   </video>
 </div>
+
+<script>
+document.getElementById('delete-btn').addEventListener('click', async () => {
+  if (!confirm('确定要删除这个视频吗？此操作不可恢复。')) return;
+
+  const btn = document.getElementById('delete-btn');
+  const author   = btn.dataset.author;
+  const filename = btn.dataset.filename;
+
+  btn.disabled = true;
+  btn.textContent = '删除中…';
+
+  try {
+    const res = await fetch(`/delete/${author}/${filename}`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // 删除成功后返回上一页
+    window.location.href = '{{ back }}';
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = '删除失败，重试';
+  }
+});
+</script>
 
 </body>
 </html>

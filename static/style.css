@@ -49,6 +49,20 @@ header h1 span { color: #1d9bf0; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.delete-btn {
+  background: transparent;
+  border: 1px solid #ef4444;
+  color: #ef4444;
+  border-radius: 6px;
+  padding: 0.3rem 0.9rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.delete-btn:hover:not(:disabled) { background: #ef4444; color: #fff; }
+.delete-btn:disabled { opacity: 0.5; cursor: default; }
 .author-link span { color: #1d9bf0; }
 .author-link:hover span { text-decoration: underline; }
 

@@ -187,6 +187,20 @@ def play(author: str, filename: str):
                            back=back)
 
 
+@app.route("/delete/<author>/<filename>", methods=["POST"])
+@login_required
+def delete_video(author: str, filename: str):
+    mp4_path = VIDEOS_DIR / author / filename
+    if not mp4_path.is_file():
+        abort(404)
+    jpg_path = mp4_path.with_suffix(".jpg")
+    mp4_path.unlink()
+    if jpg_path.exists():
+        jpg_path.unlink()
+    logger.info("已删除视频: %s/%s", author, filename)
+    return jsonify({"ok": True})
+
+
 @app.route("/videos/<author>/<filename>")
 @login_required
 def serve_video(author: str, filename: str):

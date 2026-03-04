@@ -126,16 +126,6 @@ python3.11 manage_users.py del <用户名>       # 删除用户
 
 ## 部署
 
-### 服务器信息
-
-| 项目 | 值 |
-|---|---|
-| 主机 | `h1.tomatochen.top` |
-| 用户 | `ubuntu` |
-| 端口 | `22` |
-| 项目路径 | `~/x_videos_server` |
-| systemd 服务 | `x_videos_server.service` |
-
 ### 使用部署脚本
 
 ```bash
@@ -159,10 +149,7 @@ python3.11 manage_users.py del <用户名>       # 删除用户
 # 本地推送
 git push origin main
 
-# 登录服务器
-ssh -p 22 ubuntu@h1.tomatochen.top
-
-# 服务器上执行
+# 登录服务器后执行
 cd ~/x_videos_server
 git pull origin main
 sudo systemctl restart x_videos_server

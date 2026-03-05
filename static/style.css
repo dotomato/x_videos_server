@@ -635,14 +635,77 @@ input:focus { border-color: #1d9bf0; }
     align-self: center;
   }
 
-  /* 时间线表格：进一步隐藏预览列、序号列 */
-  .tl-table .thumb-cell,
-  .tl-table th:nth-child(4),
-  .tl-table .num,
-  .tl-table th:nth-child(1) { display: none; }
+  /* 时间线：表格转卡片布局 */
+  .tl-wrap { overflow-x: visible; }
 
-  .tl-table { font-size: 0.8rem; }
-  .tl-table td { padding: 8px 8px; }
+  .tl-table thead { display: none; }  /* 隐藏表头 */
+
+  .tl-table,
+  .tl-table tbody,
+  .tl-table tr { display: block; }
+
+  /* 每行变成一张卡片 */
+  .tl-table tbody tr {
+    background: #1a1a1a;
+    border: 1px solid #222;
+    border-radius: 10px;
+    margin-bottom: 10px;
+    padding: 10px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto auto auto;
+    column-gap: 10px;
+    row-gap: 6px;
+  }
+  .tl-table tbody tr:hover td { background: transparent; }
+
+  /* 序号：隐藏 */
+  .tl-table td.num { display: none; }
+
+  /* 预览图：左列，跨两行 */
+  .tl-table td.thumb-cell {
+    grid-column: 1;
+    grid-row: 1 / 3;
+    padding: 0;
+    width: 96px;
+    align-self: start;
+  }
+  .tl-thumb { width: 96px; height: 54px; border-radius: 6px; }
+
+  /* 作者：右列第一行 */
+  .tl-table td.author-cell {
+    grid-column: 2;
+    grid-row: 1;
+    padding: 0;
+  }
+
+  /* 摘要：右列第二行 */
+  .tl-table td.snippet {
+    display: block;
+    grid-column: 2;
+    grid-row: 2;
+    padding: 0;
+    max-width: 100%;
+    white-space: normal;     /* 允许换行 */
+    font-size: 0.78rem;
+    color: #999;
+    overflow: visible;
+  }
+
+  /* 时长/大小：合并进操作行，隐藏单独的格 */
+  .tl-table td.meta-cell { display: none; }
+
+  /* 操作按钮：横跨两列，底部 */
+  .tl-table td.ops-cell {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    padding: 4px 0 0;
+    border-top: 1px solid #222;
+    white-space: normal;
+    text-align: left;
+  }
+
+  .tl-table { font-size: 0.82rem; }
 
   /* 登录页 */
   .login-box {

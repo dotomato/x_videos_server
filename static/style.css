@@ -608,10 +608,10 @@ input:focus { border-color: #1d9bf0; }
     max-height: calc(100vh - 100px);  /* 回退：不支持 dvh 的浏览器 */
   }
 
-  /* 播放页 header：星级和删除按钮换到第二行 */
+  /* 播放页 header：第一行 返回+作者+退出，第二行 星级+删除 同行 */
   body.play header {
     flex-wrap: wrap;
-    row-gap: 6px;
+    row-gap: 4px;
   }
 
   body.play header .back-btn { order: 1; }
@@ -623,12 +623,11 @@ input:focus { border-color: #1d9bf0; }
   body.play header .logout { order: 3; margin-left: auto; }
   body.play header .star-rating {
     order: 4;
-    width: 100%;            /* 第二行 */
+    flex: 1;                  /* 第二行，占剩余空间 */
     justify-content: flex-start;
   }
   body.play header .delete-btn {
-    order: 5;
-    margin-left: auto;      /* 推到右侧 */
+    order: 4;                 /* 与星级同 order，同行显示 */
     align-self: center;
   }
 

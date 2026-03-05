@@ -34,7 +34,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+import datetime
+
 app = Flask(__name__)
+
+@app.template_filter("datetimeformat")
+def datetimeformat(ts: int) -> str:
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 BASE_DIR = Path(__file__).parent
 VIDEOS_DIR = BASE_DIR / "videos"
@@ -261,11 +267,16 @@ def get_latest_videos(n: int = 10) -> list[dict]:
 
 
 def get_latest_by_author() -> list[dict]:
-    """每位作者取最新的一个视频，按作者名字母排序"""
+    """每位作者取最新的一个视频，附带视频总数，按作者名字母排序"""
     seen: dict[str, dict] = {}
+    count: dict[str, int] = {}
     for v in get_all_videos():
-        if v["author"] not in seen:
-            seen[v["author"]] = v
+        author = v["author"]
+        count[author] = count.get(author, 0) + 1
+        if author not in seen:
+            seen[author] = v
+    for author, v in seen.items():
+        v["video_count"] = count[author]
     return sorted(seen.values(), key=lambda v: v["author"].lower())
 
 

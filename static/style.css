@@ -192,6 +192,15 @@ section h2 {
 }
 .card-info a:hover { text-decoration: underline; }
 
+.card-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: #666;
+}
+.card-meta span { white-space: nowrap; }
+
 .empty {
   color: #555;
   font-size: 0.9rem;

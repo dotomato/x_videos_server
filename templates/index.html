@@ -69,6 +69,10 @@
         </div>
         <div class="card-info">
           <a href="/author/{{ v.author }}" target="_blank">@{{ v.author }}</a>
+          <div class="card-meta">
+            <span>{{ v.video_count }} 个视频</span>
+            <span>{{ v.mtime | int | datetimeformat }}</span>
+          </div>
         </div>
       </div>
       {% endfor %}

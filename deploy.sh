@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-# deploy.sh — 将本地最新代码推送到 GitHub 并部署到生产服务器
+# deploy.sh — 本地测试通过后推送至 GitHub，再部署到生产服务器
 #
 # 用法：
 #   ./deploy.sh            # 仅部署（不提交）
 #   ./deploy.sh "提交说明"  # 先提交当前变更，再部署
+#
+# 流程：
+#   1. （可选）git add -A && git commit
+#   2. 本地运行 pytest — 测试不通过则中止
+#   3. git push origin main
+#   4. 服务器：git pull origin main
+#   5. 服务器：sudo systemctl restart x_videos_server
+#   6. 检查服务状态，异常时打印最近 20 行日志
 #
 # 服务器信息：
 #   主机：h1.tomatochen.top
@@ -29,22 +37,31 @@ if [[ $# -ge 1 && -n "$1" ]]; then
     git commit -m "$1" || echo "(无新变更，跳过提交)"
 fi
 
-# ── 2. 本地：推送到 GitHub ───────────────────────────────────────────────────
+# ── 2. 本地：运行单元测试 ─────────────────────────────────────────────────────
+echo ">>> 运行单元测试..."
+if ! python3.11 -m pytest tests/ -q --tb=short; then
+    echo ""
+    echo "!!! 单元测试失败，中止部署。请修复后重试。"
+    exit 1
+fi
+echo ">>> 单元测试通过 ✓"
+
+# ── 3. 本地：推送到 GitHub ───────────────────────────────────────────────────
 echo ">>> 推送到 GitHub..."
 git push origin main
 
-# ── 3. 远程：拉取代码 ────────────────────────────────────────────────────────
+# ── 4. 远程：拉取代码 ────────────────────────────────────────────────────────
 echo ">>> 在服务器上拉取最新代码..."
 $SSH "cd ${SERVER_DIR} && git pull origin main"
 
-# ── 4. 远程：重启服务 ────────────────────────────────────────────────────────
+# ── 5. 远程：重启服务 ────────────────────────────────────────────────────────
 echo ">>> 重启服务 ${SERVICE_NAME}..."
 $SSH "sudo systemctl restart ${SERVICE_NAME}"
 
-# ── 5. 检查服务状态 ──────────────────────────────────────────────────────────
+# ── 6. 检查服务状态 ──────────────────────────────────────────────────────────
 STATUS=$($SSH "sudo systemctl is-active ${SERVICE_NAME}")
 if [[ "$STATUS" == "active" ]]; then
-    echo ">>> 部署成功，服务状态：active"
+    echo ">>> 部署成功，服务状态：active ✓"
 else
     echo "!!! 服务状态异常：${STATUS}"
     $SSH "sudo journalctl -u ${SERVICE_NAME} --no-pager -n 20"

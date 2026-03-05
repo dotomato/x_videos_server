@@ -10,7 +10,8 @@ This repository has two components:
 2. **`app.py`** — Flask web server that serves the downloaded videos through a password-protected web UI.
 
 - **Runtime**: Python 3.11
-- **Key dependencies**: `httpx` (async-capable HTTP client), `flask`, `bcrypt`, `opencv-python` (`cv2`), `wcwidth`
+- **Key dependencies**: `httpx`, `flask`, `bcrypt`, `opencv-python-headless` (`cv2`), `wcwidth`, `pytest`, `pytest-mock`
+- **Credentials**: injected via environment variables `X_AUTH_TOKEN` and `X_CT0` (see `.env.example`)
 
 ## Running the Scripts
 
@@ -44,16 +45,16 @@ python3.11 manage_users.py del <username>
 
 ## Credentials Configuration
 
-Credentials are hardcoded at the top of `x_timeline.py` (lines 21–29):
+Credentials are loaded from environment variables — **never hardcode them**:
 
 | Variable | Purpose |
 |---|---|
-| `AUTH_TOKEN` | X user `auth_token` cookie |
-| `CT0` | X CSRF token (`ct0` cookie) |
+| `X_AUTH_TOKEN` | X user `auth_token` cookie |
+| `X_CT0` | X CSRF token (`ct0` cookie) |
 | `BEARER_TOKEN` | Universal X Bearer token (fixed, same for all clients) |
-| `DOWNLOAD_DIR` | Output directory for downloaded videos (default: `<project_dir>/videos`, relative to script location) |
+| `DOWNLOAD_DIR` | Output directory for downloaded videos (default: `<project_dir>/videos`) |
 
-To use different credentials, update `AUTH_TOKEN` and `CT0`. These can be extracted from browser DevTools on x.com (Application > Cookies).
+Set them via a `.env` file (copy `.env.example`) or systemd `EnvironmentFile=`.
 
 ## Architecture
 
@@ -86,8 +87,9 @@ CLI args → get_home_timeline() → parse_timeline() → print_tweets()
 - **Authentication**: Session-based login (`/login`, `/logout`) using bcrypt via `users.json`; all routes protected by `@login_required`
 - **Thumbnail generation**: `ensure_thumbnail()` uses OpenCV to extract first frame of each `.mp4` as `.jpg` on-demand; thumbnails are cached alongside the video file
 - **Video scanning**: `get_all_videos()` globs `videos/*/*.mp4`, parses filenames into `{author}/{tweet_id}_{index}`, and sorts by `mtime` descending
-- **Timeline**: `/timeline` fetches 20 tweets from X on page load (server-side render); `/timeline/download` starts a background thread; `/timeline/progress/<task_id>` streams SSE progress events
-- **Templates**: `templates/index.html`, `templates/author.html`, `templates/play.html`, `templates/login.html`, `templates/timeline.html`
+- **Timeline/Bookmarks**: `/timeline` and `/bookmarks` fetch 20 tweets on page load; `/timeline/more` and `/bookmarks/more` handle infinite scroll (POST JSON `{cursor}`); `/timeline/download` starts a background thread; `/timeline/progress/<task_id>` streams SSE progress events
+- **Ratings**: `ratings.json` stores `author/filename → score` (1–5); `load_ratings()` / `save_ratings()` are protected by `_ratings_lock`
+- **Templates**: `base_timeline.html` (shared timeline/bookmarks base), `index.html`, `author.html`, `play.html`, `login.html`, `timeline.html`, `bookmarks.html`, `liked.html`
 
 ### Key Functions
 
@@ -146,6 +148,25 @@ Example: `videos/Uaijie/2029001949665001594_0.mp4`
 }
 ```
 
+## Testing
+
+```bash
+# Run all unit tests
+python3.11 -m pytest tests/ -v
+
+# Quick mode (minimal output)
+python3.11 -m pytest tests/ -q
+```
+
+Tests are fully offline — no network, X API, or real video files required. All external dependencies are mocked via `monkeypatch`.
+
+| Test file | Coverage |
+|---|---|
+| `tests/test_x_timeline.py` | `extract_videos`, `_parse_instructions`, `parse_timeline`, `parse_bookmarks`, queryId cache, `make_headers`, `get_user_id`, `get_tweet_by_id`, HTTP error handling |
+| `tests/test_app.py` | Path safety (`_safe_segment`, `_safe_filename`), all routes (400/404/200), login rate limiting, open-redirect fix, HTTP security headers, bcrypt password check, OpenCV thumbnail mock, video scanning/sorting, SSE progress stream |
+
+**Tests must pass before deployment** — `deploy.sh` runs `pytest` automatically and aborts on failure.
+
 ## Deployment
 
 - **Server**: `ubuntu@h1.tomatochen.top:22`
@@ -155,9 +176,11 @@ Example: `videos/Uaijie/2029001949665001594_0.mp4`
 ### Deploy script (`deploy.sh`)
 
 ```bash
-./deploy.sh              # push + remote pull + restart
-./deploy.sh "msg"        # commit locally, then push + deploy
+./deploy.sh              # run tests → push → remote pull → restart
+./deploy.sh "msg"        # commit locally, then run tests → push → deploy
 ```
+
+The script aborts immediately if `pytest tests/` fails — the remote server is never touched.
 
 ### Manual steps
 

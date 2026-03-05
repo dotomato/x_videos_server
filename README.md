@@ -58,29 +58,34 @@ x_videos_server/
 ## 环境要求
 
 - Python 3.11+
-- 依赖：`flask`、`httpx`、`bcrypt`、`opencv-python`、`wcwidth`
+- 依赖：`flask`、`httpx`、`bcrypt`、`opencv-python-headless`、`wcwidth`、`pytest`、`pytest-mock`
 
 安装依赖：
 
 ```bash
-pip install flask httpx bcrypt opencv-python wcwidth
+pip install -r requirements.txt
 ```
 
 ## 配置
 
 ### X 账号凭证
 
-编辑 `x_timeline.py` 顶部（第 21–26 行），填入你的 X 账号 Cookie：
+凭证通过环境变量注入，不可硬编码：
 
-```python
-AUTH_TOKEN = "你的 auth_token"
-CT0        = "你的 ct0"
+```bash
+# 复制示例文件并填入凭证
+cp .env.example .env
+# 编辑 .env，填入以下两个变量：
+X_AUTH_TOKEN=你的_auth_token
+X_CT0=你的_ct0
 ```
 
 获取方式：
 1. 在浏览器中打开 x.com 并登录
 2. 打开开发者工具 → Application → Cookies → `https://x.com`
-3. 复制 `auth_token` 和 `ct0` 的值
+3. 复制 `auth_token`（→ `X_AUTH_TOKEN`）和 `ct0`（→ `X_CT0`）的值
+
+本地运行时可用 `source .env` 加载，或在 systemd service 中配置 `EnvironmentFile=`。
 
 ### Web 应用用户
 
@@ -91,6 +96,23 @@ python3.11 manage_users.py add <用户名>
 ```
 
 按提示输入密码，若文件不存在会自动创建。
+
+## 测试
+
+```bash
+# 运行全部单元测试
+python3.11 -m pytest tests/ -v
+
+# 快速模式（精简输出）
+python3.11 -m pytest tests/ -q
+```
+
+测试不依赖网络、X API 或真实视频文件，均使用 `monkeypatch`/mock 隔离。覆盖范围：
+
+| 测试文件 | 覆盖内容 |
+|---|---|
+| `tests/test_x_timeline.py` | `extract_videos`、`_parse_instructions`、`parse_timeline`、`parse_bookmarks`、queryId 缓存、`make_headers`、`get_user_id`、`get_tweet_by_id` 等 |
+| `tests/test_app.py` | 路径安全校验、路由 400/404/200、登录速率限制、开放重定向修复、HTTP 安全响应头、bcrypt 密码验证、OpenCV 缩略图生成、视频扫描与排序、SSE 下载进度流 |
 
 ## 使用方法
 
@@ -152,10 +174,11 @@ python3.11 manage_users.py del <用户名>       # 删除用户
 
 脚本会依次执行：
 1. （可选）`git add -A && git commit`
-2. `git push origin main`
-3. 服务器上 `git pull origin main`
-4. `sudo systemctl restart x_videos_server`
-5. 检查服务状态，异常时打印最近 20 行日志
+2. **本地运行 `pytest tests/`** — 测试不通过则立即中止，不推送
+3. `git push origin main`
+4. 服务器上 `git pull origin main`
+5. `sudo systemctl restart x_videos_server`
+6. 检查服务状态，异常时打印最近 20 行日志
 
 ### 手动部署
 

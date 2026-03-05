@@ -281,12 +281,34 @@ def favicon():
     return send_from_directory(BASE_DIR / "static", "favicon.ico", mimetype="image/x-icon")
 
 
+def _fmt_size(size_bytes: int) -> str:
+    """将字节数格式化为人类可读的字符串（GiB / MiB / KiB）。"""
+    if size_bytes >= 1 << 30:
+        return f"{size_bytes / (1 << 30):.2f} GiB"
+    if size_bytes >= 1 << 20:
+        return f"{size_bytes / (1 << 20):.1f} MiB"
+    if size_bytes >= 1 << 10:
+        return f"{size_bytes / (1 << 10):.0f} KiB"
+    return f"{size_bytes} B"
+
+
+def get_videos_size() -> int:
+    """返回 videos/ 目录下所有 .mp4 文件的字节总和。"""
+    if not VIDEOS_DIR.exists():
+        return 0
+    return sum(p.stat().st_size for p in VIDEOS_DIR.glob("*/*.mp4"))
+
+
 @app.route("/")
 @login_required
 def index():
     latest = get_latest_videos(10)
     by_author = get_latest_by_author()
-    return render_template("index.html", latest=latest, by_author=by_author)
+    videos_size = _fmt_size(get_videos_size())
+    disk = os.statvfs(VIDEOS_DIR if VIDEOS_DIR.exists() else BASE_DIR)
+    disk_free = _fmt_size(disk.f_bavail * disk.f_frsize)
+    return render_template("index.html", latest=latest, by_author=by_author,
+                           videos_size=videos_size, disk_free=disk_free)
 
 
 @app.route("/author/<name>")

@@ -97,6 +97,28 @@ header h1 span { color: #1d9bf0; }
 }
 .logout:hover { color: #aaa; }
 
+/* 导航链接组（首页、喜欢页等） */
+.header-nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;        /* 推到右侧 */
+  flex-shrink: 0;
+}
+.header-nav .logout { margin-left: 0; }
+
+/* 作者页 header 中的标题 */
+.header-author {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #fff;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.header-author span { color: #1d9bf0; }
+
 /* ─── Main layout ────────────────────────────────────────────────────────── */
 main { padding: 28px 20px 48px; max-width: 1400px; margin: 0 auto; }
 
@@ -513,3 +535,118 @@ input:focus { border-color: #1d9bf0; }
 }
 .card-stars .s-on  { color: #f59e0b; }
 .card-stars .s-off { color: #3a3a3a; }
+
+/* ─── Responsive ─────────────────────────────────────────────────────────── */
+
+/* 平板 */
+@media (max-width: 768px) {
+  header {
+    padding: 10px 16px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  header h1 { font-size: 1.1rem; }
+
+  .disk-info { gap: 8px; font-size: 0.75rem; }
+
+  main { padding: 20px 14px 40px; }
+
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+  }
+
+  /* 时间线表格：隐藏摘要列、时长列 */
+  .tl-table .snippet,
+  .tl-table .meta-cell,
+  .tl-table th:nth-child(3),
+  .tl-table th:nth-child(5) { display: none; }
+
+  /* 预览图缩小 */
+  .tl-thumb { width: 64px; height: 36px; }
+}
+
+/* 手机 */
+@media (max-width: 480px) {
+  header {
+    padding: 8px 12px;
+    gap: 8px;
+  }
+
+  header h1 { font-size: 1rem; }
+
+  /* 磁盘信息在最小屏幕隐藏，节省空间 */
+  .disk-info { display: none; }
+
+  /* 导航组换行，撑满第二行 */
+  .header-nav {
+    width: 100%;
+    margin-left: 0;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .back-btn { font-size: 0.82rem; }
+
+  .logout { margin-left: auto; }
+
+  main { padding: 14px 10px 36px; }
+
+  section { margin-bottom: 30px; }
+
+  /* 单列卡片 */
+  .grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .card-info { padding: 8px 10px; }
+
+  /* 播放页 */
+  .player-wrap { padding: 0; }
+
+  .player-wrap video {
+    border-radius: 0;
+    max-height: calc(100vh - 56px);
+  }
+
+  /* 播放页 header：星级和删除按钮换到第二行 */
+  body.play header {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  body.play header .back-btn { order: 1; }
+  body.play header .author-link {
+    order: 2;
+    flex: 1;
+    min-width: 0;
+  }
+  body.play header .logout { order: 3; margin-left: auto; }
+  body.play header .star-rating {
+    order: 4;
+    width: 100%;            /* 第二行 */
+    justify-content: flex-start;
+  }
+  body.play header .delete-btn {
+    order: 5;
+    margin-left: auto;      /* 推到右侧 */
+    align-self: center;
+  }
+
+  /* 时间线表格：进一步隐藏预览列、序号列 */
+  .tl-table .thumb-cell,
+  .tl-table th:nth-child(4),
+  .tl-table .num,
+  .tl-table th:nth-child(1) { display: none; }
+
+  .tl-table { font-size: 0.8rem; }
+  .tl-table td { padding: 8px 8px; }
+
+  /* 登录页 */
+  .login-box {
+    margin: 16px;
+    padding: 28px 20px;
+  }
+}

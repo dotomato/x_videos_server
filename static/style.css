@@ -570,8 +570,9 @@ input:focus { border-color: #1d9bf0; }
 
   header h1 { font-size: 1rem; }
 
-  /* 磁盘信息在最小屏幕隐藏，节省空间 */
-  .disk-info { display: none; }
+  /* 磁盘信息在最小屏幕缩小字号，不再隐藏 */
+  .disk-info { font-size: 0.7rem; gap: 6px; }
+  .disk-info span { padding: 2px 6px; }
 
   /* 导航组换行，撑满第二行 */
   .header-nav {

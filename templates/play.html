@@ -12,6 +12,11 @@
 <header>
   <a class="back-btn" href="{{ back }}">← 返回</a>
   <a class="author-link" href="/author/{{ author }}">@<span>{{ author }}</span></a>
+  <div class="star-rating" id="star-rating" data-author="{{ author }}" data-filename="{{ filename }}">
+    {% for i in range(1, 6) %}
+    <span class="star {% if i <= current_score %}active{% endif %}" data-score="{{ i }}">★</span>
+    {% endfor %}
+  </div>
   <button class="delete-btn" id="delete-btn" data-author="{{ author }}" data-filename="{{ filename }}">删除视频</button>
   <a class="logout" href="/logout">退出登录</a>
 </header>
@@ -23,6 +28,52 @@
 </div>
 
 <script>
+// ── 星级评分 ──────────────────────────────────────────────────
+(function () {
+  const container = document.getElementById('star-rating');
+  const stars = container.querySelectorAll('.star');
+  const author = container.dataset.author;
+  const filename = container.dataset.filename;
+
+  function setStars(score) {
+    stars.forEach(s => {
+      s.classList.toggle('active', parseInt(s.dataset.score) <= score);
+    });
+  }
+
+  // 悬停预览
+  stars.forEach(s => {
+    s.addEventListener('mouseenter', () => setStars(parseInt(s.dataset.score)));
+    s.addEventListener('mouseleave', () => {
+      const cur = parseInt(container.dataset.current || '0');
+      setStars(cur);
+    });
+    s.addEventListener('click', async () => {
+      const score = parseInt(s.dataset.score);
+      // 再次点击同一颗星则取消评分
+      const prev = parseInt(container.dataset.current || '0');
+      const newScore = (score === prev) ? 0 : score;
+      try {
+        const res = await fetch(`/rate/${author}/${filename}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ score: newScore }),
+        });
+        if (!res.ok) throw new Error();
+        container.dataset.current = newScore;
+        setStars(newScore);
+      } catch (_) {
+        // 静默失败，恢复原状
+        setStars(prev);
+      }
+    });
+  });
+
+  // 初始化 current
+  container.dataset.current = '{{ current_score }}';
+})();
+
+// ── 删除视频 ──────────────────────────────────────────────────
 document.getElementById('delete-btn').addEventListener('click', async () => {
   if (!confirm('确定要删除这个视频吗？此操作不可恢复。')) return;
 
@@ -36,7 +87,6 @@ document.getElementById('delete-btn').addEventListener('click', async () => {
   try {
     const res = await fetch(`/delete/${author}/${filename}`, { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // 删除成功后返回上一页
     window.location.href = '{{ back }}';
   } catch (err) {
     btn.disabled = false;

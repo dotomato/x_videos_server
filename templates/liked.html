@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>X Videos</title>
+  <title>喜欢 — X Videos</title>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
 </head>
@@ -11,52 +11,18 @@
 
 <header>
   <h1><span>X</span> Videos</h1>
-  <div class="disk-info">
-    <span title="已下载视频占用空间">视频容量: {{ videos_size }}</span>
-    <span title="磁盘可用空间">磁盘剩余: {{ disk_free }}</span>
-  </div>
-  <a class="back-btn" href="/liked">喜欢</a>
+  <a class="back-btn" href="/">首页</a>
   <a class="back-btn" href="/timeline">时间线</a>
   <a class="back-btn" href="/downloader">下载器</a>
   <a class="logout" href="/logout">退出登录</a>
 </header>
 
 <main>
-
-  <!-- 最新视频 -->
   <section>
-    <h2>最新视频</h2>
-    {% if latest %}
+    <h2>喜欢的视频</h2>
+    {% if videos %}
     <div class="grid">
-      {% for v in latest %}
-      <div class="card">
-        <div class="thumb">
-          <a href="/play/{{ v.author }}/{{ v.mp4 }}" target="_blank">
-            {% if v.jpg %}
-            <img src="/videos/{{ v.author }}/{{ v.jpg }}" loading="lazy" alt="{{ v.author }}">
-            {% else %}
-            <div class="no-thumb">🎬</div>
-            {% endif %}
-            <div class="play-btn">▶</div>
-          </a>
-        </div>
-        <div class="card-info">
-          <a href="/author/{{ v.author }}" target="_blank">@{{ v.author }}</a>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <p class="empty">暂无视频</p>
-    {% endif %}
-  </section>
-
-  <!-- 按作者浏览 -->
-  <section>
-    <h2>按作者浏览</h2>
-    {% if by_author %}
-    <div class="grid">
-      {% for v in by_author %}
+      {% for v in videos %}
       <div class="card">
         <div class="thumb">
           <a href="/play/{{ v.author }}/{{ v.mp4 }}" target="_blank">
@@ -71,7 +37,11 @@
         <div class="card-info">
           <a href="/author/{{ v.author }}" target="_blank">@{{ v.author }}</a>
           <div class="card-meta">
-            <span>{{ v.video_count }} 个视频</span>
+            <span class="card-stars">
+              {% for i in range(1, 6) %}
+              <span class="{% if i <= v.score %}s-on{% else %}s-off{% endif %}">★</span>
+              {% endfor %}
+            </span>
             <span>{{ v.mtime | int | datetimeformat }}</span>
           </div>
         </div>
@@ -79,10 +49,9 @@
       {% endfor %}
     </div>
     {% else %}
-    <p class="empty">暂无视频</p>
+    <p class="empty">还没有评过分的视频，去播放页给视频打星吧。</p>
     {% endif %}
   </section>
-
 </main>
 
 </body>

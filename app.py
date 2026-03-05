@@ -45,6 +45,26 @@ def datetimeformat(ts: int) -> str:
 BASE_DIR = Path(__file__).parent
 VIDEOS_DIR = BASE_DIR / "videos"
 USERS_FILE = BASE_DIR / "users.json"
+RATINGS_FILE = BASE_DIR / "ratings.json"
+
+
+# ─── 评分数据 ─────────────────────────────────────────────────────────────────
+
+_ratings_lock = threading.Lock()
+
+
+def load_ratings() -> dict:
+    """读取 ratings.json，不存在时返回空字典。"""
+    if not RATINGS_FILE.exists():
+        return {}
+    with open(RATINGS_FILE, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_ratings(data: dict) -> None:
+    """将评分数据写入 ratings.json（需在 _ratings_lock 内调用）。"""
+    with open(RATINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 # ─── 配置加载 ─────────────────────────────────────────────────────────────────
@@ -343,10 +363,12 @@ def play(author: str, filename: str):
         abort(404)
     jpg = filename.rsplit(".", 1)[0] + ".jpg"
     back = request.referrer or url_for("author", name=author)
+    key = f"{author}/{filename}"
+    current_score = load_ratings().get(key, 0)
     return render_template("play.html", author=author, filename=filename,
                            src=f"/videos/{author}/{filename}",
                            thumb=f"/videos/{author}/{jpg}",
-                           back=back)
+                           back=back, current_score=current_score)
 
 
 @app.route("/delete/<author>/<filename>", methods=["POST"])
@@ -361,8 +383,79 @@ def delete_video(author: str, filename: str):
     mp4_path.unlink()
     if jpg_path.exists():
         jpg_path.unlink()
+    # 同步删除评分
+    key = f"{author}/{filename}"
+    with _ratings_lock:
+        ratings = load_ratings()
+        if key in ratings:
+            del ratings[key]
+            save_ratings(ratings)
     logger.info("已删除视频: %s/%s", author, filename)
     return jsonify({"ok": True})
+
+
+@app.route("/rate/<author>/<filename>", methods=["POST"])
+@login_required
+def rate_video(author: str, filename: str):
+    """给视频打分（1-5 星），score=0 表示取消评分。"""
+    if not _safe_segment(author) or not _safe_filename(filename):
+        abort(400)
+    mp4_path = VIDEOS_DIR / author / filename
+    if not mp4_path.is_file():
+        abort(404)
+    data = request.get_json(silent=True) or {}
+    try:
+        score = int(data.get("score", 0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid score"}), 400
+    if score not in range(0, 6):
+        return jsonify({"error": "score must be 0-5"}), 400
+    key = f"{author}/{filename}"
+    with _ratings_lock:
+        ratings = load_ratings()
+        if score == 0:
+            ratings.pop(key, None)
+        else:
+            ratings[key] = score
+        save_ratings(ratings)
+    return jsonify({"ok": True, "score": score})
+
+
+@app.route("/liked")
+@login_required
+def liked():
+    """喜欢页：按评分降序显示已评分视频（评分相同则按 mtime 降序）。"""
+    ratings = load_ratings()
+    if not ratings:
+        return render_template("liked.html", videos=[])
+    videos = []
+    for key, score in ratings.items():
+        # key 格式: author/filename
+        parts = key.split("/", 1)
+        if len(parts) != 2:
+            continue
+        author, filename = parts
+        if not _safe_segment(author) or not _safe_filename(filename):
+            continue
+        mp4_path = VIDEOS_DIR / author / filename
+        if not mp4_path.is_file():
+            continue
+        jpg = ensure_thumbnail(mp4_path)
+        has_thumb = jpg is not None and jpg.exists()
+        stem = Path(filename).stem
+        p = stem.rsplit("_", 1)
+        tweet_id = p[0] if len(p) == 2 else stem
+        videos.append({
+            "author": author,
+            "filename": filename,
+            "mp4": filename,
+            "jpg": Path(filename).stem + ".jpg" if has_thumb else None,
+            "tweet_id": tweet_id,
+            "score": score,
+            "mtime": mp4_path.stat().st_mtime,
+        })
+    videos.sort(key=lambda v: (-v["score"], -v["mtime"]))
+    return render_template("liked.html", videos=videos)
 
 
 @app.route("/videos/<author>/<filename>")

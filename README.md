@@ -4,16 +4,24 @@
 
 ## 功能
 
-**时间线 & 下载**
-- 通过 X 的 GraphQL API（Cookie 认证）获取首页时间线
+**时间线 & 书签 & 下载**
+- 通过 X 的 GraphQL API（Cookie 认证）获取首页时间线和书签
+- 时间线/书签页支持无限滚动分页加载
 - 输入推文 URL 直接获取并下载视频（下载器页面）
 - 以最高码率自动选择最佳视频质量下载
 - 在浏览器中下载视频，实时显示进度（Server-Sent Events）
 
 **视频管理**
 - 按作者或时间浏览已下载的视频
+- 视频评分系统（1–5 星），「喜欢」页按评分展示视频
+- 首页显示总视频占用容量和磁盘可用空间
 - 自动生成视频缩略图（OpenCV 提取第一帧）
 - 支持在线播放和删除视频
+
+**移动端适配**
+- 响应式布局，适配手机屏幕
+- 时间线/书签页在手机上以卡片形式展示，保留全部信息
+- 手机端预览图点击全屏放大，桌面端悬停浮动预览
 
 **安全**
 - 基于 Session 的登录认证，所有页面均受密码保护
@@ -26,20 +34,24 @@
 ```
 x_videos_server/
 ├── app.py              # Flask Web 服务器
-├── x_timeline.py       # CLI 脚本，用于获取时间线和下载视频
+├── x_timeline.py       # CLI 脚本，用于获取时间线/书签和下载视频
 ├── manage_users.py     # 用户管理工具
 ├── templates/          # HTML 模板
+│   ├── base_timeline.html  # 时间线/书签共用基础模板
 │   ├── index.html
 │   ├── author.html
 │   ├── play.html
 │   ├── login.html
-│   └── timeline.html
+│   ├── timeline.html
+│   ├── bookmarks.html
+│   └── liked.html
 ├── static/
 │   └── style.css
 ├── videos/             # 下载的视频（自动创建）
 │   └── {用户名}/
 │       ├── {tweet_id}_{序号}.mp4
 │       └── {tweet_id}_{序号}.jpg  # 自动生成的缩略图
+├── ratings.json        # 视频评分数据（不纳入版本控制）
 └── users.json          # 用户凭证（不纳入版本控制）
 ```
 
@@ -108,11 +120,13 @@ python3.11 app.py
 
 | 路由 | 说明 |
 |---|---|
-| `/` | 首页：最新 10 个视频 + 所有作者 |
-| `/timeline` | 从 X 获取 20 条推文，可在浏览器中下载视频 |
+| `/` | 首页：最新视频 + 所有作者（含视频数和磁盘信息） |
+| `/timeline` | 从 X 获取 20 条时间线推文，支持无限滚动加载和视频下载 |
+| `/bookmarks` | 从 X 获取 20 条书签推文，支持无限滚动加载和视频下载 |
+| `/liked` | 喜欢：按评分展示已评分的视频 |
 | `/downloader` | 下载器：输入推文 URL 查看并下载视频 |
 | `/author/<名称>` | 指定作者的所有视频 |
-| `/play/<作者>/<文件>` | 视频播放页 |
+| `/play/<作者>/<文件>` | 视频播放页（含评分和删除） |
 | `/user/<用户名>` | 指定 X 用户的时间线 |
 
 ### 用户管理
@@ -158,6 +172,6 @@ sudo systemctl is-active x_videos_server
 
 ## 注意事项
 
-- `users.json` 和 `videos/` 目录已通过 `.gitignore` 排除在版本控制之外
-- X GraphQL 的 `queryId` 缓存于 `.query_id_cache.json`，当 API 返回 400/403 时会自动刷新
+- `users.json`、`ratings.json` 和 `videos/` 目录已通过 `.gitignore` 排除在版本控制之外
+- X GraphQL 的 `queryId` 缓存于 `.query_id_cache.json`，当 API 返回 400/403 时会自动刷新；书签和时间线各自独立缓存
 - 缩略图在首次访问时生成，并与视频文件存放在同一目录

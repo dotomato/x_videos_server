@@ -599,11 +599,13 @@ input:focus { border-color: #1d9bf0; }
   .card-info { padding: 8px 10px; }
 
   /* 播放页 */
-  .player-wrap { padding: 0; }
+  .player-wrap { padding: 8px 0; }
 
   .player-wrap video {
     border-radius: 0;
-    max-height: calc(100vh - 56px);
+    /* header 折两行约 90px，再留 10px 余量 */
+    max-height: calc(100dvh - 100px);
+    max-height: calc(100vh - 100px);  /* 回退：不支持 dvh 的浏览器 */
   }
 
   /* 播放页 header：星级和删除按钮换到第二行 */

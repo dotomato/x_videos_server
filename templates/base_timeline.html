@@ -182,21 +182,51 @@ function bindDlBtn(btn) {
 
 document.querySelectorAll('.dl-btn').forEach(bindDlBtn);
 
-// ─── Thumbnail hover preview
+// ─── Thumbnail hover preview (desktop) / tap overlay (mobile)
+const isTouchDevice = () => window.matchMedia('(hover: none)').matches;
+
+// 创建全局 overlay（仅一个，复用）
+const _overlay = document.createElement('div');
+_overlay.id = 'thumb-overlay';
+_overlay.style.cssText = [
+  'display:none', 'position:fixed', 'inset:0', 'z-index:300',
+  'background:rgba(0,0,0,0.75)', 'align-items:center', 'justify-content:center',
+  'cursor:zoom-out',
+].join(';');
+const _overlayImg = document.createElement('img');
+_overlayImg.style.cssText = 'max-width:92vw;max-height:86vh;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.8)';
+_overlay.appendChild(_overlayImg);
+document.body.appendChild(_overlay);
+_overlay.addEventListener('click', () => { _overlay.style.display = 'none'; });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') _overlay.style.display = 'none'; });
+
 function bindThumbPreview(wrap) {
+  const thumb   = wrap.querySelector('.tl-thumb');
   const preview = wrap.querySelector('.tl-thumb-preview');
-  wrap.addEventListener('mousemove', e => {
-    const GAP = 16, pw = 320;
-    const ph = preview.naturalHeight
-      ? Math.round(preview.naturalHeight / preview.naturalWidth * pw) : 180;
-    let x = e.clientX + GAP;
-    let y = e.clientY - Math.round(ph / 2);
-    if (x + pw > window.innerWidth  - GAP) x = e.clientX - pw - GAP;
-    if (y < GAP)                            y = GAP;
-    if (y + ph > window.innerHeight - GAP)  y = window.innerHeight - ph - GAP;
-    preview.style.left = x + 'px';
-    preview.style.top  = y + 'px';
-  });
+
+  if (isTouchDevice()) {
+    // 触摸设备：点击缩略图弹出 overlay
+    thumb.style.cursor = 'zoom-in';
+    thumb.addEventListener('click', e => {
+      e.stopPropagation();
+      _overlayImg.src = preview.src;
+      _overlay.style.display = 'flex';
+    });
+  } else {
+    // 桌面：鼠标悬停浮层跟随
+    wrap.addEventListener('mousemove', e => {
+      const GAP = 16, pw = 320;
+      const ph = preview.naturalHeight
+        ? Math.round(preview.naturalHeight / preview.naturalWidth * pw) : 180;
+      let x = e.clientX + GAP;
+      let y = e.clientY - Math.round(ph / 2);
+      if (x + pw > window.innerWidth  - GAP) x = e.clientX - pw - GAP;
+      if (y < GAP)                            y = GAP;
+      if (y + ph > window.innerHeight - GAP)  y = window.innerHeight - ph - GAP;
+      preview.style.left = x + 'px';
+      preview.style.top  = y + 'px';
+    });
+  }
 }
 
 document.querySelectorAll('.tl-thumb-wrap').forEach(bindThumbPreview);

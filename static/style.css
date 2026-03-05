@@ -282,7 +282,7 @@ input:focus { border-color: #1d9bf0; }
   font-size: 0.85rem;
 }
 
-button {
+.login-box button {
   margin-top: 24px;
   width: 100%;
   padding: 11px;
@@ -295,8 +295,8 @@ button {
   cursor: pointer;
   transition: background 0.2s;
 }
-button:hover { background: #1a8cd8; }
-button:active { background: #1677b3; }
+.login-box button:hover { background: #1a8cd8; }
+.login-box button:active { background: #1677b3; }
 
 /* ─── Timeline page ──────────────────────────────────────────────────────── */
 .tl-wrap {

@@ -225,7 +225,7 @@ def get_home_timeline(count: int = 5, cursor: str = None) -> list[dict]:
             "count":                  count,
             "includePromotedContent": True,
             "latestControlAvailable": True,
-            "requestContext":         "launch",
+            "requestContext":         "ptr",
             "withCommunity":          True,
             "seenTweetIds":           [],
         }
@@ -272,7 +272,7 @@ def get_home_timeline_with_cursor(count: int = 20, cursor: str = None) -> tuple[
             "count":                  count,
             "includePromotedContent": True,
             "latestControlAvailable": True,
-            "requestContext":         "launch",
+            "requestContext":         "ptr",
             "withCommunity":          True,
             "seenTweetIds":           [],
         }

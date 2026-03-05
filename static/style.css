@@ -65,12 +65,14 @@ header h1 span { color: #1d9bf0; }
 }
 
 .delete-btn {
+  align-self: center;
   background: transparent;
   border: 1px solid #ef4444;
   color: #ef4444;
   border-radius: 6px;
-  padding: 0.3rem 0.9rem;
-  font-size: 0.85rem;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.15s, color 0.15s;

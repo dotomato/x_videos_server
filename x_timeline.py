@@ -76,6 +76,7 @@ TWEET_FEATURES: dict = {
     "longform_notetweets_rich_text_read_enabled":                              True,
     "longform_notetweets_inline_media_enabled":                                True,
     "responsive_web_enhance_cards_enabled":                                    False,
+    "graphql_timeline_v2_bookmark_timeline":                                   True,
 }
 
 
@@ -621,6 +622,67 @@ def get_tweet_by_id(tweet_id: str) -> dict | None:
         except Exception as e:
             print(f"获取推文详情失败: {e}")
     return None
+
+
+# ─── 书签时间线 ───────────────────────────────────────────────────────────────
+
+FALLBACK_BOOKMARKS_QUERY_ID = "pLtjrO4ubNh996M_Cubwsg"
+_BOOKMARKS_QUERY_ID_CACHE_KEY = "bookmarks_query_id"
+
+
+def get_bookmarks_query_id() -> str:
+    cache = _load_cache()
+    return cache.get(_BOOKMARKS_QUERY_ID_CACHE_KEY) or FALLBACK_BOOKMARKS_QUERY_ID
+
+
+def _fetch_bookmarks_query_id(client: httpx.Client) -> str:
+    return _fetch_query_id_for_operation(
+        client, "Bookmarks", _BOOKMARKS_QUERY_ID_CACHE_KEY, FALLBACK_BOOKMARKS_QUERY_ID
+    )
+
+
+def parse_bookmarks(data: dict) -> tuple[list[dict], str | None]:
+    """解析 Bookmarks GraphQL 响应，返回 (tweets, bottom_cursor)。"""
+    try:
+        instructions = data["data"]["bookmark_timeline_v2"]["timeline"]["instructions"]
+    except KeyError:
+        return [], None
+    return _parse_instructions(instructions)
+
+
+def get_bookmarks_with_cursor(count: int = 20, cursor: str = None) -> tuple[list[dict], str | None]:
+    """获取当前用户的书签推文，返回 (tweets, next_cursor)。"""
+    cookies = {"auth_token": AUTH_TOKEN, "ct0": CT0}
+
+    with httpx.Client(cookies=cookies, headers=make_headers(), timeout=30) as client:
+        query_id = get_bookmarks_query_id()
+
+        variables: dict = {
+            "count":                  count,
+            "includePromotedContent": False,
+        }
+        if cursor:
+            variables["cursor"] = cursor
+
+        url = f"https://x.com/i/api/graphql/{query_id}/Bookmarks"
+        payload = {
+            "queryId":   query_id,
+            "variables": variables,
+            "features":  TWEET_FEATURES,
+        }
+
+        resp = client.post(url, json=payload)
+
+        if resp.status_code in (400, 403):
+            query_id = _fetch_bookmarks_query_id(client)
+            url = f"https://x.com/i/api/graphql/{query_id}/Bookmarks"
+            payload["queryId"] = query_id
+            resp = client.post(url, json=payload)
+
+        if resp.status_code != 200:
+            return [], None
+
+        return parse_bookmarks(resp.json())
 
 
 # ─── 入口 ─────────────────────────────────────────────────────────────────────

@@ -22,7 +22,8 @@ import cv2
 from x_timeline import (
     get_home_timeline, get_home_timeline_with_cursor,
     get_user_id, get_user_timeline_with_cursor,
-    get_tweet_by_id, DOWNLOAD_DIR,
+    get_tweet_by_id, get_bookmarks_with_cursor,
+    DOWNLOAD_DIR,
 )
 
 # ─── 日志 ──────────────────────────────────────────────────────────────────────
@@ -527,6 +528,24 @@ def mark_downloaded(tweets: list[dict]) -> list[dict]:
             path = VIDEOS_DIR / t["user"] / f"{t['id']}_{i}.mp4"
             v["downloaded"] = path.is_file()
     return tweets
+
+
+@app.route("/bookmarks")
+@login_required
+def bookmarks():
+    tweets, next_cursor = get_bookmarks_with_cursor(count=20)
+    return render_template("bookmarks.html", tweets=mark_downloaded(tweets), next_cursor=next_cursor or "")
+
+
+@app.route("/bookmarks/more", methods=["POST"])
+@login_required
+def bookmarks_more():
+    data = request.get_json(force=True)
+    cursor = data.get("cursor", "")
+    if not cursor:
+        return jsonify({"error": "missing cursor"}), 400
+    tweets, next_cursor = get_bookmarks_with_cursor(count=20, cursor=cursor)
+    return jsonify({"tweets": mark_downloaded(tweets), "next_cursor": next_cursor or ""})
 
 
 @app.route("/timeline")

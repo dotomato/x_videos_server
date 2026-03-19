@@ -334,7 +334,7 @@ def get_videos_size() -> int:
 @app.route("/")
 @login_required
 def index():
-    latest = get_latest_videos(10)
+    latest = get_latest_videos(20)
     by_author = get_latest_by_author()
     videos_size = _fmt_size(get_videos_size())
     disk = os.statvfs(VIDEOS_DIR if VIDEOS_DIR.exists() else BASE_DIR)

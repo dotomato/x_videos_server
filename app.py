@@ -334,13 +334,43 @@ def get_videos_size() -> int:
 @app.route("/")
 @login_required
 def index():
-    latest = get_latest_videos(20)
-    by_author = get_latest_by_author()
+    all_videos = get_all_videos()
+    page_size = 30
+    first_page = all_videos[:page_size]
+    total = len(all_videos)
+    has_more = total > page_size
     videos_size = _fmt_size(get_videos_size())
     disk = os.statvfs(VIDEOS_DIR if VIDEOS_DIR.exists() else BASE_DIR)
     disk_free = _fmt_size(disk.f_bavail * disk.f_frsize)
-    return render_template("index.html", latest=latest, by_author=by_author,
+    return render_template("index.html", videos=first_page, total=total,
+                           has_more=has_more, page_size=page_size,
                            videos_size=videos_size, disk_free=disk_free)
+
+
+@app.route("/videos/more", methods=["POST"])
+@login_required
+def videos_more():
+    """首页无限滚动：按偏移量返回下一批视频。"""
+    data = request.get_json(force=True)
+    offset = int(data.get("offset", 0))
+    page_size = 30
+    all_videos = get_all_videos()
+    batch = all_videos[offset:offset + page_size]
+    has_more = offset + page_size < len(all_videos)
+    return jsonify({
+        "videos": batch,
+        "has_more": has_more,
+    })
+
+
+@app.route("/authors")
+@login_required
+def authors():
+    """按作者浏览页面。"""
+    by_author = get_latest_by_author()
+    videos_size = _fmt_size(get_videos_size())
+    return render_template("authors.html", by_author=by_author,
+                           videos_size=videos_size)
 
 
 @app.route("/author/<name>")

@@ -15,7 +15,9 @@
     <span title="已下载视频占用空间">视频容量: {{ videos_size }}</span>
     <span title="磁盘可用空间">磁盘剩余: {{ disk_free }}</span>
   </div>
+  <span class="count" id="video-count">共 {{ total }} 个视频</span>
   <nav class="header-nav">
+    <a class="back-btn" href="/authors">作者</a>
     <a class="back-btn" href="/liked">喜欢</a>
     <a class="back-btn" href="/bookmarks">书签</a>
     <a class="back-btn" href="/timeline">时间线</a>
@@ -25,68 +27,125 @@
 </header>
 
 <main>
-
-  <!-- 最新视频 -->
-  <section>
-    <h2>最新视频</h2>
-    {% if latest %}
-    <div class="grid">
-      {% for v in latest %}
-      <div class="card">
-        <div class="thumb">
-          <a href="/play/{{ v.author }}/{{ v.mp4 }}" target="_blank">
-            {% if v.jpg %}
-            <img src="/videos/{{ v.author }}/{{ v.jpg }}" loading="lazy" alt="{{ v.author }}">
-            {% else %}
-            <div class="no-thumb">🎬</div>
-            {% endif %}
-            <div class="play-btn">▶</div>
-          </a>
-        </div>
-        <div class="card-info">
-          <a href="/author/{{ v.author }}" target="_blank">@{{ v.author }}</a>
+  {% if videos %}
+  <div class="grid" id="video-grid">
+    {% for v in videos %}
+    <div class="card">
+      <div class="thumb">
+        <a href="/play/{{ v.author }}/{{ v.mp4 }}" target="_blank">
+          {% if v.jpg %}
+          <img src="/videos/{{ v.author }}/{{ v.jpg }}" loading="lazy" alt="{{ v.author }}">
+          {% else %}
+          <div class="no-thumb">🎬</div>
+          {% endif %}
+          <div class="play-btn">▶</div>
+        </a>
+      </div>
+      <div class="card-info">
+        <a href="/author/{{ v.author }}" target="_blank">@{{ v.author }}</a>
+        <div class="card-meta">
+          <span>{{ v.mtime | int | datetimeformat }}</span>
         </div>
       </div>
-      {% endfor %}
     </div>
-    {% else %}
-    <p class="empty">暂无视频</p>
-    {% endif %}
-  </section>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">暂无视频</p>
+  {% endif %}
 
-  <!-- 按作者浏览 -->
-  <section>
-    <h2>按作者浏览</h2>
-    {% if by_author %}
-    <div class="grid">
-      {% for v in by_author %}
-      <div class="card">
-        <div class="thumb">
-          <a href="/play/{{ v.author }}/{{ v.mp4 }}" target="_blank">
-            {% if v.jpg %}
-            <img src="/videos/{{ v.author }}/{{ v.jpg }}" loading="lazy" alt="{{ v.author }}">
-            {% else %}
-            <div class="no-thumb">🎬</div>
-            {% endif %}
-            <div class="play-btn">▶</div>
-          </a>
-        </div>
-        <div class="card-info">
-          <a href="/author/{{ v.author }}" target="_blank">@{{ v.author }}</a>
-          <div class="card-meta">
-            <span>{{ v.video_count }} 个视频</span>
-            <span>{{ v.mtime | int | datetimeformat }}</span>
-          </div>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <p class="empty">暂无视频</p>
-    {% endif %}
-  </section>
-
+  <!-- 无限滚动 sentinel -->
+  <div id="load-sentinel" style="height:1px"></div>
+  <div id="load-status" class="load-status"></div>
 </main>
+
+<script>
+const PAGE_SIZE = {{ page_size }};
+let currentOffset = {{ videos | length }};
+let hasMore = {{ 'true' if has_more else 'false' }};
+let loading = false;
+
+const grid = document.getElementById('video-grid');
+const sentinel = document.getElementById('load-sentinel');
+const loadStatus = document.getElementById('load-status');
+const countEl = document.getElementById('video-count');
+const totalCount = {{ total }};
+
+function updateCount() {
+  const cards = grid ? grid.querySelectorAll('.card').length : 0;
+  if (countEl) countEl.textContent = `共 ${totalCount} 个视频（已加载 ${cards}）`;
+}
+
+function buildCard(v) {
+  const thumbHtml = v.jpg
+    ? `<img src="/videos/${v.author}/${v.jpg}" loading="lazy" alt="${v.author}">`
+    : `<div class="no-thumb">🎬</div>`;
+  const dateStr = new Date(v.mtime * 1000).toLocaleString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit'
+  });
+  return `<div class="card">
+    <div class="thumb">
+      <a href="/play/${v.author}/${v.mp4}" target="_blank">
+        ${thumbHtml}
+        <div class="play-btn">▶</div>
+      </a>
+    </div>
+    <div class="card-info">
+      <a href="/author/${v.author}" target="_blank">@${v.author}</a>
+      <div class="card-meta"><span>${dateStr}</span></div>
+    </div>
+  </div>`;
+}
+
+async function loadMore() {
+  if (loading || !hasMore || !grid) return;
+  loading = true;
+  loadStatus.textContent = '加载中…';
+
+  try {
+    const res = await fetch('/videos/more', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ offset: currentOffset }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const videos = data.videos || [];
+    hasMore = data.has_more;
+
+    if (videos.length === 0) {
+      hasMore = false;
+      loadStatus.textContent = '';
+      observer.disconnect();
+      return;
+    }
+
+    videos.forEach(v => {
+      grid.insertAdjacentHTML('beforeend', buildCard(v));
+    });
+
+    currentOffset += videos.length;
+    updateCount();
+    loadStatus.textContent = '';
+
+    if (!hasMore) {
+      loadStatus.textContent = '';
+      observer.disconnect();
+    }
+  } catch (err) {
+    loadStatus.textContent = '加载失败，滚动重试';
+  } finally {
+    loading = false;
+  }
+}
+
+const observer = new IntersectionObserver(entries => {
+  if (entries[0].isIntersecting) loadMore();
+}, { rootMargin: '400px' });
+
+if (sentinel && hasMore) observer.observe(sentinel);
+</script>
 
 </body>
 </html>

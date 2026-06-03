@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>按作者浏览 — X Videos</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+</head>
+<body>
+
+<header>
+  <a class="back-btn" href="/">← 首页</a>
+  <h1>按作者浏览</h1>
+  <span class="count">共 {{ by_author|length }} 位作者</span>
+  <div class="disk-info">
+    <span title="已下载视频占用空间">视频容量: {{ videos_size }}</span>
+  </div>
+  <nav class="header-nav">
+    <a class="back-btn" href="/liked">喜欢</a>
+    <a class="back-btn" href="/bookmarks">书签</a>
+    <a class="back-btn" href="/timeline">时间线</a>
+    <a class="back-btn" href="/downloader">下载器</a>
+    <a class="logout" href="/logout">退出登录</a>
+  </nav>
+</header>
+
+<main>
+  {% if by_author %}
+  <div class="grid">
+    {% for v in by_author %}
+    <div class="card">
+      <div class="thumb">
+        <a href="/author/{{ v.author }}" target="_blank">
+          {% if v.jpg %}
+          <img src="/videos/{{ v.author }}/{{ v.jpg }}" loading="lazy" alt="{{ v.author }}">
+          {% else %}
+          <div class="no-thumb">🎬</div>
+          {% endif %}
+          <div class="play-btn">▶</div>
+        </a>
+      </div>
+      <div class="card-info">
+        <a href="/author/{{ v.author }}" target="_blank">@{{ v.author }}</a>
+        <div class="card-meta">
+          <span>{{ v.video_count }} 个视频</span>
+          <span>{{ v.mtime | int | datetimeformat }}</span>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">暂无视频</p>
+  {% endif %}
+</main>
+
+</body>
+</html>

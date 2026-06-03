@@ -1079,3 +1079,82 @@ class TestApiTweetRoute:
         """无请求体时应返回 400。"""
         resp = client.post("/api/tweet", data="", content_type="application/json")
         assert resp.status_code == 400
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /authors
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAuthorsRoute:
+    def test_renders_with_empty_videos_dir(self, client, videos_dir):
+        resp = client.get("/authors")
+        assert resp.status_code == 200
+
+    def test_renders_with_authors(self, client, videos_dir, monkeypatch):
+        author_dir = videos_dir / "alice"
+        author_dir.mkdir()
+        (author_dir / "tweet_0.mp4").write_bytes(b"fake")
+        (author_dir / "tweet_0.jpg").write_bytes(b"thumb")
+        monkeypatch.setattr(flask_app, "ensure_thumbnail",
+                            lambda p: p.with_suffix(".jpg"))
+        resp = client.get("/authors")
+        assert resp.status_code == 200
+        assert b"alice" in resp.data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /videos/more
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVideosMoreRoute:
+    def _setup_videos(self, videos_dir, monkeypatch, count=5):
+        """创建多个视频文件供分页测试。"""
+        author_dir = videos_dir / "alice"
+        author_dir.mkdir()
+        for i in range(count):
+            (author_dir / f"tweet_{i}.mp4").write_bytes(b"fake")
+            (author_dir / f"tweet_{i}.jpg").write_bytes(b"thumb")
+        monkeypatch.setattr(flask_app, "ensure_thumbnail",
+                            lambda p: p.with_suffix(".jpg"))
+
+    def test_returns_next_batch(self, client, videos_dir, monkeypatch):
+        self._setup_videos(videos_dir, monkeypatch, count=5)
+        resp = client.post("/videos/more",
+                           data=json.dumps({"offset": 0}),
+                           content_type="application/json")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "videos" in data
+        assert "has_more" in data
+        assert len(data["videos"]) == 5
+        assert data["has_more"] is False
+
+    def test_has_more_when_more_exist(self, client, videos_dir, monkeypatch):
+        self._setup_videos(videos_dir, monkeypatch, count=35)
+        # page_size=30, offset=0 → 30 items, has_more=True
+        resp = client.post("/videos/more",
+                           data=json.dumps({"offset": 0}),
+                           content_type="application/json")
+        data = resp.get_json()
+        assert len(data["videos"]) == 30
+        assert data["has_more"] is True
+
+    def test_second_page(self, client, videos_dir, monkeypatch):
+        self._setup_videos(videos_dir, monkeypatch, count=35)
+        # page_size=30, offset=30 → 5 items, has_more=False
+        resp = client.post("/videos/more",
+                           data=json.dumps({"offset": 30}),
+                           content_type="application/json")
+        data = resp.get_json()
+        assert len(data["videos"]) == 5
+        assert data["has_more"] is False
+
+    def test_empty_offset_returns_empty(self, client, videos_dir, monkeypatch):
+        self._setup_videos(videos_dir, monkeypatch, count=3)
+        # offset beyond total → empty
+        resp = client.post("/videos/more",
+                           data=json.dumps({"offset": 100}),
+                           content_type="application/json")
+        data = resp.get_json()
+        assert len(data["videos"]) == 0
+        assert data["has_more"] is False

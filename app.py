@@ -12,6 +12,7 @@ import logging
 import threading
 import bcrypt
 import httpx
+import tempfile
 from pathlib import Path
 from functools import wraps
 from flask import (
@@ -25,6 +26,7 @@ from x_timeline import (
     get_tweet_by_id, get_bookmarks_with_cursor,
     DOWNLOAD_DIR,
 )
+from storage import get_storage, StorageBackend, CosStorage
 
 # ─── 日志 ──────────────────────────────────────────────────────────────────────
 
@@ -174,22 +176,23 @@ def logout():
 @app.after_request
 def add_security_headers(response):
     """为所有响应添加安全头，防止常见 Web 攻击。"""
-    # 禁止浏览器 MIME 类型猜测
     response.headers["X-Content-Type-Options"] = "nosniff"
-    # 禁止在 iframe 中嵌入（防止点击劫持）
     response.headers["X-Frame-Options"] = "DENY"
-    # 关闭旧版 XSS 过滤器（现代浏览器用 CSP，旧过滤器可能被绕过）
     response.headers["X-XSS-Protection"] = "0"
-    # 引用信息只发送源（不泄露路径）
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    # 仅对视频流响应豁免 CSP（send_from_directory 用于 /videos/ 路由）
     if not response.direct_passthrough:
+        store = get_storage()
+        cos_domain = ""
+        if isinstance(store, CosStorage):
+            # 从 COS bucket 名称提取域名（格式: bucket-appid.cos.region.myqcloud.com）
+            import os as _os
+            cos_domain = f"{_os.environ.get('COS_BUCKET', '')}.cos.{_os.environ.get('COS_REGION', '')}.myqcloud.com"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: pbs.twimg.com video.twimg.com; "
-            "media-src 'self' blob:; "
+            f"img-src 'self' data: pbs.twimg.com video.twimg.com {cos_domain}; "
+            f"media-src 'self' blob: {cos_domain}; "
             "connect-src 'self'; "
             "frame-ancestors 'none';"
         )
@@ -238,45 +241,113 @@ def _parse_tweet_url(url: str) -> tuple[str | None, str | None]:
 
 # ─── 缩略图 ───────────────────────────────────────────────────────────────────
 
-def ensure_thumbnail(mp4_path: Path) -> Path | None:
-    """若缩略图不存在，用 OpenCV 截取第一帧生成 jpg"""
-    jpg_path = mp4_path.with_suffix(".jpg")
-    if not jpg_path.exists():
+def ensure_thumbnail(author: str, filename: str) -> str | None:
+    """确保缩略图存在。返回缩略图的 storage key（不含前缀）或 None。
+    对于 Local: OpenCV 截帧保存到本地。
+    对于 COS: 下载到临时文件 → OpenCV 截帧 → 上传 jpg → 清理。
+    """
+    store = get_storage()
+    mp4_key = f"{author}/{filename}"
+    jpg_key = f"{author}/{Path(filename).stem}.jpg"
+
+    # 缩略图已存在
+    if store.exists(jpg_key):
+        return jpg_key
+
+    if isinstance(store, CosStorage):
+        # COS: 下载到临时文件，截帧后上传
+        try:
+            tmp_dir = Path(tempfile.mkdtemp())
+            tmp_mp4 = tmp_dir / filename
+            tmp_jpg = tmp_dir / (Path(filename).stem + ".jpg")
+
+            # 下载 mp4
+            cos_key = f"videos/{mp4_key}"
+            resp = store.client.get_object(
+                Bucket=store.bucket,
+                Key=cos_key,
+            )
+            tmp_mp4.write_bytes(resp["Body"].getvalue())
+
+            # 截帧
+            cap = cv2.VideoCapture(str(tmp_mp4))
+            ret, frame = cap.read()
+            cap.release()
+            if ret:
+                cv2.imwrite(str(tmp_jpg), frame)
+                # 上传 jpg
+                store.upload_file(jpg_key, tmp_jpg, content_type="image/jpeg")
+                # 清理
+                tmp_mp4.unlink(missing_ok=True)
+                tmp_jpg.unlink(missing_ok=True)
+                tmp_dir.rmdir()
+                return jpg_key
+            else:
+                tmp_mp4.unlink(missing_ok=True)
+                tmp_dir.rmdir()
+                return None
+        except Exception as e:
+            logger.error("COS 缩略图生成失败: %s", e, exc_info=True)
+            return None
+    else:
+        # Local: 原有逻辑
+        mp4_path = VIDEOS_DIR / mp4_key
+        jpg_path = VIDEOS_DIR / jpg_key
+        if not mp4_path.is_file():
+            return None
         cap = cv2.VideoCapture(str(mp4_path))
         ret, frame = cap.read()
         cap.release()
         if ret:
             cv2.imwrite(str(jpg_path), frame)
-        else:
-            return None
-    return jpg_path
+            return jpg_key
+        return None
 
 
 # ─── 数据扫描 ─────────────────────────────────────────────────────────────────
 
 def get_all_videos() -> list[dict]:
-    """扫描 videos/*/*.mp4，确保缩略图存在，按 mtime 降序返回"""
-    videos = []
-    if not VIDEOS_DIR.exists():
-        return videos
+    """扫描所有视频，按 mtime 降序返回"""
+    store = get_storage()
+    objects = store.list_objects()
 
-    for mp4 in VIDEOS_DIR.glob("*/*.mp4"):
-        author = mp4.parent.name
-        stem = mp4.stem  # e.g. "2029001949665001594_0"
+    # 筛选 mp4 文件
+    mp4_objects = {o["key"]: o for o in objects if o["key"].endswith(".mp4")}
+    jpg_objects = {o["key"]: o for o in objects if o["key"].endswith(".jpg")}
+
+    videos = []
+    for key, obj in mp4_objects.items():
+        # key 格式: author/tweet_id_index.mp4
+        parts_path = key.split("/")
+        if len(parts_path) != 2:
+            continue
+        author = parts_path[0]
+        filename = parts_path[1]
+        stem = Path(filename).stem
         parts = stem.rsplit("_", 1)
         tweet_id = parts[0] if len(parts) == 2 else stem
         index = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 0
 
-        jpg = ensure_thumbnail(mp4)
-        has_thumb = jpg is not None and jpg.exists()
+        jpg_key = f"{author}/{stem}.jpg"
+        has_thumb = jpg_key in jpg_objects
+
+        # 解析 mtime
+        mtime = obj["last_modified"]
+        if isinstance(mtime, str):
+            # COS 返回 ISO 格式时间字符串
+            try:
+                dt = datetime.datetime.fromisoformat(mtime.replace("Z", "+00:00"))
+                mtime = dt.timestamp()
+            except Exception:
+                mtime = 0
 
         videos.append({
             "author": author,
             "tweet_id": tweet_id,
             "index": index,
-            "mp4": mp4.name,
-            "jpg": mp4.stem + ".jpg" if has_thumb else None,
-            "mtime": mp4.stat().st_mtime,
+            "mp4": filename,
+            "jpg": Path(filename).stem + ".jpg" if has_thumb else None,
+            "mtime": mtime,
         })
 
     videos.sort(key=lambda v: v["mtime"], reverse=True)
@@ -306,6 +377,33 @@ def get_author_videos(author: str) -> list[dict]:
     return [v for v in get_all_videos() if v["author"] == author]
 
 
+# ─── 辅助 ─────────────────────────────────────────────────────────────────────
+
+def _video_url(author: str, filename: str, expires: int = 3600) -> str:
+    """获取视频的访问 URL（预签名或本地路径）。"""
+    store = get_storage()
+    key = f"{author}/{filename}"
+    return store.get_url(key, expires=expires)
+
+
+def _thumb_url(author: str, jpg_filename: str, expires: int = 300) -> str:
+    """获取缩略图的访问 URL（预签名或本地路径）。"""
+    store = get_storage()
+    key = f"{author}/{jpg_filename}"
+    return store.get_url(key, expires=expires)
+
+
+def _annotate_urls(videos: list[dict], thumb_expires: int = 300) -> list[dict]:
+    """为视频列表添加 thumb_url 字段。"""
+    store = get_storage()
+    for v in videos:
+        if v.get("jpg"):
+            v["thumb_url"] = store.get_url(f"{v['author']}/{v['jpg']}", expires=thumb_expires)
+        else:
+            v["thumb_url"] = None
+    return videos
+
+
 # ─── 路由 ─────────────────────────────────────────────────────────────────────
 
 @app.route("/favicon.ico")
@@ -325,10 +423,9 @@ def _fmt_size(size_bytes: int) -> str:
 
 
 def get_videos_size() -> int:
-    """返回 videos/ 目录下所有 .mp4 文件的字节总和。"""
-    if not VIDEOS_DIR.exists():
-        return 0
-    return sum(p.stat().st_size for p in VIDEOS_DIR.glob("*/*.mp4"))
+    """返回所有 .mp4 文件的字节总和。"""
+    store = get_storage()
+    return store.total_size()
 
 
 @app.route("/")
@@ -340,11 +437,13 @@ def index():
     total = len(all_videos)
     has_more = total > page_size
     videos_size = _fmt_size(get_videos_size())
-    disk = os.statvfs(VIDEOS_DIR if VIDEOS_DIR.exists() else BASE_DIR)
-    disk_free = _fmt_size(disk.f_bavail * disk.f_frsize)
+    store = get_storage()
+    disk_free = store.get_disk_free()
+    _annotate_urls(first_page)
     return render_template("index.html", videos=first_page, total=total,
                            has_more=has_more, page_size=page_size,
-                           videos_size=videos_size, disk_free=disk_free)
+                           videos_size=videos_size, disk_free=disk_free,
+                           storage_type=os.environ.get("STORAGE_BACKEND", "local"))
 
 
 @app.route("/videos/more", methods=["POST"])
@@ -357,6 +456,7 @@ def videos_more():
     all_videos = get_all_videos()
     batch = all_videos[offset:offset + page_size]
     has_more = offset + page_size < len(all_videos)
+    _annotate_urls(batch)
     return jsonify({
         "videos": batch,
         "has_more": has_more,
@@ -369,6 +469,7 @@ def authors():
     """按作者浏览页面。"""
     by_author = get_latest_by_author()
     videos_size = _fmt_size(get_videos_size())
+    _annotate_urls(by_author)
     return render_template("authors.html", by_author=by_author,
                            videos_size=videos_size)
 
@@ -381,6 +482,7 @@ def author(name: str):
     videos = get_author_videos(name)
     if not videos:
         abort(404)
+    _annotate_urls(videos)
     return render_template("author.html", author=name, videos=videos)
 
 
@@ -389,16 +491,22 @@ def author(name: str):
 def play(author: str, filename: str):
     if not _safe_segment(author) or not _safe_filename(filename):
         abort(400)
-    mp4_path = VIDEOS_DIR / author / filename
-    if not mp4_path.is_file():
+    store = get_storage()
+    mp4_key = f"{author}/{filename}"
+    if not store.exists(mp4_key):
         abort(404)
     jpg = filename.rsplit(".", 1)[0] + ".jpg"
+    # 确保缩略图存在
+    ensure_thumbnail(author, filename)
+    # 生成预签名 URL（视频 1 小时，缩略图 5 分钟）
+    src_url = store.get_url(mp4_key, expires=3600)
+    thumb_url = store.get_url(f"{author}/{jpg}", expires=300) if store.exists(f"{author}/{jpg}") else ""
     back = request.referrer or url_for("author", name=author)
     key = f"{author}/{filename}"
     current_score = load_ratings().get(key, 0)
     return render_template("play.html", author=author, filename=filename,
-                           src=f"/videos/{author}/{filename}",
-                           thumb=f"/videos/{author}/{jpg}",
+                           src=src_url,
+                           thumb=thumb_url,
                            back=back, current_score=current_score)
 
 
@@ -407,13 +515,14 @@ def play(author: str, filename: str):
 def delete_video(author: str, filename: str):
     if not _safe_segment(author) or not _safe_filename(filename):
         abort(400)
-    mp4_path = VIDEOS_DIR / author / filename
-    if not mp4_path.is_file():
+    store = get_storage()
+    mp4_key = f"{author}/{filename}"
+    if not store.exists(mp4_key):
         abort(404)
-    jpg_path = mp4_path.with_suffix(".jpg")
-    mp4_path.unlink()
-    if jpg_path.exists():
-        jpg_path.unlink()
+    jpg_key = f"{author}/{Path(filename).stem}.jpg"
+    store.delete(mp4_key)
+    if store.exists(jpg_key):
+        store.delete(jpg_key)
     # 同步删除评分
     key = f"{author}/{filename}"
     with _ratings_lock:
@@ -431,8 +540,9 @@ def rate_video(author: str, filename: str):
     """给视频打分（1-5 星），score=0 表示取消评分。"""
     if not _safe_segment(author) or not _safe_filename(filename):
         abort(400)
-    mp4_path = VIDEOS_DIR / author / filename
-    if not mp4_path.is_file():
+    store = get_storage()
+    mp4_key = f"{author}/{filename}"
+    if not store.exists(mp4_key):
         abort(404)
     data = request.get_json(silent=True) or {}
     try:
@@ -459,6 +569,7 @@ def liked():
     ratings = load_ratings()
     if not ratings:
         return render_template("liked.html", videos=[])
+    store = get_storage()
     videos = []
     for key, score in ratings.items():
         # key 格式: author/filename
@@ -468,22 +579,43 @@ def liked():
         author, filename = parts
         if not _safe_segment(author) or not _safe_filename(filename):
             continue
-        mp4_path = VIDEOS_DIR / author / filename
-        if not mp4_path.is_file():
+        mp4_key = f"{author}/{filename}"
+        if not store.exists(mp4_key):
             continue
-        jpg = ensure_thumbnail(mp4_path)
-        has_thumb = jpg is not None and jpg.exists()
+        jpg_key = f"{author}/{Path(filename).stem}.jpg"
+        has_thumb = store.exists(jpg_key)
         stem = Path(filename).stem
         p = stem.rsplit("_", 1)
         tweet_id = p[0] if len(p) == 2 else stem
+
+        # 获取 mtime
+        try:
+            obj_info = None
+            for o in store.list_objects(f"{author}/"):
+                if o["key"] == mp4_key:
+                    obj_info = o
+                    break
+            mtime = obj_info["last_modified"] if obj_info else 0
+            if isinstance(mtime, str):
+                try:
+                    dt = datetime.datetime.fromisoformat(mtime.replace("Z", "+00:00"))
+                    mtime = dt.timestamp()
+                except Exception:
+                    mtime = 0
+        except Exception:
+            mtime = 0
+
+        thumb_url = store.get_url(jpg_key, expires=300) if has_thumb else None
+
         videos.append({
             "author": author,
             "filename": filename,
             "mp4": filename,
             "jpg": Path(filename).stem + ".jpg" if has_thumb else None,
+            "thumb_url": thumb_url,
             "tweet_id": tweet_id,
             "score": score,
-            "mtime": mp4_path.stat().st_mtime,
+            "mtime": mtime,
         })
     videos.sort(key=lambda v: (-v["score"], -v["mtime"]))
     return render_template("liked.html", videos=videos)
@@ -492,12 +624,21 @@ def liked():
 @app.route("/videos/<author>/<filename>")
 @login_required
 def serve_video(author: str, filename: str):
+    """本地存储模式下提供视频/缩略图文件服务；COS 模式下重定向到预签名 URL。"""
     if not _safe_segment(author) or not _safe_filename(filename):
         abort(400)
-    author_dir = VIDEOS_DIR / author
-    if not author_dir.is_dir():
-        abort(404)
-    return send_from_directory(author_dir, filename)
+    store = get_storage()
+    key = f"{author}/{filename}"
+    if isinstance(store, CosStorage):
+        # COS 模式：重定向到预签名 URL
+        url = store.get_url(key, expires=3600)
+        return redirect(url)
+    else:
+        # Local 模式：原有 send_from_directory
+        author_dir = VIDEOS_DIR / author
+        if not author_dir.is_dir():
+            abort(404)
+        return send_from_directory(author_dir, filename)
 
 
 # ─── 时间线路由 ───────────────────────────────────────────────────────────────
@@ -515,18 +656,20 @@ def _set_task(task_id: str, **kwargs):
 
 
 def _do_download(task_id: str, user: str, tweet_id: str, video_url: str, video_index: int):
-    """在后台线程中流式下载单个视频，实时更新进度。"""
-    user_dir = DOWNLOAD_DIR / user
-    user_dir.mkdir(parents=True, exist_ok=True)
-    filename = user_dir / f"{tweet_id}_{video_index}.mp4"
+    """在后台线程中流式下载单个视频，实时更新进度，上传到存储后端。"""
+    store = get_storage()
+    filename = f"{tweet_id}_{video_index}.mp4"
+    mp4_key = f"{user}/{filename}"
     logger.info("[%s] 开始下载 user=%s tweet_id=%s index=%d", task_id[:8], user, tweet_id, video_index)
-    logger.info("[%s] 目标路径: %s", task_id[:8], filename)
-    logger.info("[%s] 视频 URL: %s", task_id[:8], video_url)
 
-    if filename.exists():
+    if store.exists(mp4_key):
         logger.info("[%s] 文件已存在，跳过", task_id[:8])
         _set_task(task_id, status="skipped", progress=1, total=1, done=True)
         return
+
+    # 下载到临时文件
+    tmp_dir = Path(tempfile.mkdtemp())
+    tmp_mp4 = tmp_dir / filename
 
     try:
         with httpx.Client(timeout=120, follow_redirects=True) as client:
@@ -536,27 +679,51 @@ def _do_download(task_id: str, user: str, tweet_id: str, video_url: str, video_i
                 total = int(r.headers.get("content-length", 0))
                 _set_task(task_id, status="downloading", progress=0, total=total, done=False)
                 downloaded = 0
-                with open(filename, "wb") as f:
+                with open(tmp_mp4, "wb") as f:
                     for chunk in r.iter_bytes(chunk_size=1024 * 64):
                         f.write(chunk)
                         downloaded += len(chunk)
                         _set_task(task_id, progress=downloaded, total=total)
-        logger.info("[%s] 下载完成，共 %d 字节，保存至 %s", task_id[:8], downloaded, filename)
+
+        logger.info("[%s] 下载完成，共 %d 字节，开始上传到存储后端", task_id[:8], downloaded)
+
+        # 上传 mp4 到存储后端
+        _set_task(task_id, status="uploading", progress=downloaded, total=total)
+        store.upload_file(mp4_key, tmp_mp4, content_type="video/mp4")
+
+        # 生成缩略图并上传
+        cap = cv2.VideoCapture(str(tmp_mp4))
+        ret, frame = cap.read()
+        cap.release()
+        if ret:
+            tmp_jpg = tmp_dir / f"{Path(filename).stem}.jpg"
+            cv2.imwrite(str(tmp_jpg), frame)
+            jpg_key = f"{user}/{Path(filename).stem}.jpg"
+            store.upload_file(jpg_key, tmp_jpg, content_type="image/jpeg")
+            tmp_jpg.unlink(missing_ok=True)
+
+        # 清理临时文件
+        tmp_mp4.unlink(missing_ok=True)
+        tmp_dir.rmdir()
+
+        logger.info("[%s] 上传完成: %s", task_id[:8], mp4_key)
         _set_task(task_id, status="done", progress=total or 1, total=total or 1, done=True)
     except Exception as e:
         logger.error("[%s] 下载失败: %s", task_id[:8], e, exc_info=True)
-        # 清理不完整文件
-        if filename.exists():
-            filename.unlink(missing_ok=True)
+        # 清理临时文件
+        if tmp_mp4.exists():
+            tmp_mp4.unlink(missing_ok=True)
+        tmp_dir.rmdir(missing_ok=True)
         _set_task(task_id, status="error", message=str(e), done=True)
 
 
 def mark_downloaded(tweets: list[dict]) -> list[dict]:
     """为每条推文的每个视频标注是否已下载"""
+    store = get_storage()
     for t in tweets:
         for i, v in enumerate(t.get("videos", [])):
-            path = VIDEOS_DIR / t["user"] / f"{t['id']}_{i}.mp4"
-            v["downloaded"] = path.is_file()
+            key = f"{t['user']}/{t['id']}_{i}.mp4"
+            v["downloaded"] = store.exists(key)
     return tweets
 
 

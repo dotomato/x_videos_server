@@ -23,8 +23,8 @@
     <div class="card">
       <div class="thumb">
         <a href="/play/{{ v.author }}/{{ v.mp4 }}" target="_blank">
-          {% if v.jpg %}
-          <img src="/videos/{{ v.author }}/{{ v.jpg }}" loading="lazy" alt="{{ v.author }}">
+          {% if v.thumb_url %}
+          <img src="{{ v.thumb_url }}" loading="lazy" alt="{{ v.author }}">
           {% else %}
           <div class="no-thumb">🎬</div>
           {% endif %}

@@ -33,8 +33,8 @@
     <div class="card">
       <div class="thumb">
         <a href="/play/{{ v.author }}/{{ v.mp4 }}" target="_blank">
-          {% if v.jpg %}
-          <img src="/videos/{{ v.author }}/{{ v.jpg }}" loading="lazy" alt="{{ v.author }}">
+          {% if v.thumb_url %}
+          <img src="{{ v.thumb_url }}" loading="lazy" alt="{{ v.author }}">
           {% else %}
           <div class="no-thumb">🎬</div>
           {% endif %}
@@ -77,8 +77,8 @@ function updateCount() {
 }
 
 function buildCard(v) {
-  const thumbHtml = v.jpg
-    ? `<img src="/videos/${v.author}/${v.jpg}" loading="lazy" alt="${v.author}">`
+  const thumbHtml = v.thumb_url
+    ? `<img src="${v.thumb_url}" loading="lazy" alt="${v.author}">`
     : `<div class="no-thumb">🎬</div>`;
   const dateStr = new Date(v.mtime * 1000).toLocaleString('zh-CN', {
     year: 'numeric', month: '2-digit', day: '2-digit',

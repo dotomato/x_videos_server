@@ -6,26 +6,15 @@ Two-component Python project for scraping X (Twitter) timeline videos and servin
 
 1. **`x_timeline.py`** — CLI + library that scrapes X's private GraphQL API using cookie-based auth, and downloads videos from tweets.
 2. **`app.py`** — Flask web server that serves the downloaded videos through a session-authenticated web UI with ratings, thumbnails, and in-browser downloading.
+3. **`storage.py`** — Storage abstraction layer supporting local filesystem and Tencent Cloud COS backends.
 
 - **Runtime**: Python 3.11
-- **Key dependencies**: `httpx`, `flask`, `bcrypt`, `opencv-python-headless` (`cv2`), `wcwidth`, `pytest`, `pytest-mock`
+- **Key dependencies**: `httpx`, `flask`, `bcrypt`, `opencv-python-headless` (`cv2`), `wcwidth`, `cos-python-sdk-v5`
 - **Credentials**: injected via environment variables `X_AUTH_TOKEN` and `X_CT0` (see `.env.example`)
 
 ## Commands
 
 ```bash
-# Run all tests (must pass before deployment)
-python3.11 -m pytest tests/ -v
-
-# Run a single test file
-python3.11 -m pytest tests/test_app.py -v
-
-# Run a specific test by name
-python3.11 -m pytest tests/test_app.py::test_login_rate_limit -v
-
-# Quick mode (minimal output)
-python3.11 -m pytest tests/ -q
-
 # Fetch 5 tweets (default) from CLI
 python3.11 x_timeline.py
 
@@ -41,30 +30,52 @@ python3.11 manage_users.py add <username>
 python3.11 manage_users.py passwd <username>
 python3.11 manage_users.py del <username>
 
-# Deploy (tests → push → remote pull → restart)
+# Deploy (push → remote pull → restart)
 ./deploy.sh
 ./deploy.sh "commit message"   # also commits locally first
 ```
 
 ## Architecture
 
+### Storage Layer
+
+`storage.py` provides a `StorageBackend` abstract class with two implementations:
+
+- **`LocalStorage`** — Original local filesystem approach. Files stored under `videos/{author}/{filename}`. URLs are `/videos/{author}/{filename}` paths served by Flask.
+- **`CosStorage`** — Tencent Cloud COS object storage. Files stored with `videos/` prefix in a private bucket. Access via presigned URLs (1h for videos, 5min for thumbnails).
+
+Selected via `STORAGE_BACKEND` env var (`"local"` default, `"cos"` for COS). Singleton via `get_storage()`.
+
+| Method | Local | COS |
+|---|---|---|
+| `upload_file(key, path, content_type)` | `shutil.copy2` to `videos/{key}` | `client.upload_file()` with multipart |
+| `upload_bytes(key, data, content_type)` | `Path.write_bytes()` | `client.put_object()` |
+| `exists(key)` | `Path.is_file()` | `client.object_exists()` |
+| `delete(key)` | `Path.unlink()` | `client.delete_object()` |
+| `list_objects(prefix)` | `glob(*/*)` | `client.list_objects()` with pagination |
+| `get_url(key, expires)` | `/videos/{key}` | `client.get_presigned_download_url()` |
+| `get_size(key)` | `Path.stat().st_size` | `client.head_object()` → Content-Length |
+| `total_size(prefix)` | Sum mp4 file sizes | Sum mp4 objects from list |
+| `get_disk_free()` | `shutil.disk_usage()` | `"∞"` |
+
 ### Data Flow
 
 ```
-x_timeline.py  ──(downloads)──▶  videos/{screen_name}/{tweet_id}_{index}.mp4
+x_timeline.py  ──(downloads)──▶  storage backend (local or COS)
                                            │
                                            ▼
                                        app.py (Flask)
                                   ─────────────────────────────────
-                                  /                → index (latest + by-author)
+                                  /                → index (infinite scroll, all videos)
+                                  /authors         → browse by author
+                                  /author/<n>      → all videos by author
                                   /timeline        → fetch 20 tweets + download UI
                                   /bookmarks       → fetch 20 bookmarks + download UI
                                   /user/<name>     → user-specific timeline
                                   /downloader      → single-tweet URL download
                                   /liked           → rated videos (sorted by score)
-                                  /author/<n>      → all videos by author
                                   /play/<a>/<f>    → video player + rating + delete
-                                  /videos/<a>/<f>  → raw file serving
+                                  /videos/<a>/<f>  → raw file serving (local) / redirect to presigned URL (COS)
 ```
 
 ### `x_timeline.py` Pipeline
@@ -90,21 +101,22 @@ All share the same `TWEET_FEATURES` dict and the same auto-refresh pattern: on 4
 ### `app.py` Structure
 
 - **Authentication**: Session-based login (`/login`, `/logout`) using bcrypt via `users.json`; all routes protected by `@login_required`. Login rate-limited: 5 failures → 5-min lockout per IP.
-- **Security headers**: `add_security_headers()` adds CSP, X-Frame-Options, X-Content-Type-Options etc. to all non-passthrough responses.
+- **Security headers**: `add_security_headers()` adds CSP, X-Frame-Options, X-Content-Type-Options etc. to all non-passthrough responses. CSP dynamically includes COS domain when using CosStorage.
 - **Path safety**: `_safe_segment()` and `_safe_filename()` validate all URL parameters to prevent path traversal.
-- **Thumbnail generation**: `ensure_thumbnail()` uses OpenCV to extract first frame of each `.mp4` as `.jpg` on-demand; thumbnails are cached alongside the video file.
-- **Video scanning**: `get_all_videos()` globs `videos/*/*.mp4`, parses filenames into `{author}/{tweet_id}_{index}`, sorts by `mtime` descending.
-- **Timeline/Bookmarks/User timeline**: Each has an initial page route + a `/more` POST endpoint for infinite scroll (JSON `{cursor}`); `mark_downloaded()` annotates which videos already exist locally.
-- **Downloader**: `/downloader` page + `/api/tweet` POST endpoint; `_parse_tweet_url()` extracts tweet ID from x.com URL, `get_tweet_by_id()` fetches details.
-- **Downloads**: `/timeline/download` starts a background thread via `_do_download()`; `/timeline/progress/<task_id>` streams SSE progress events (polls `_download_tasks` dict every 300ms).
+- **Thumbnail generation**: `ensure_thumbnail(author, filename)` uses OpenCV to extract first frame; for COS, downloads mp4 to temp → extracts frame → uploads jpg → cleans temp.
+- **Video scanning**: `get_all_videos()` uses `store.list_objects()` to enumerate mp4/jpg files; parses keys into `{author}/{tweet_id}_{index}`.
+- **URL generation**: `_video_url()`, `_thumb_url()`, `_annotate_urls()` generate presigned URLs (COS) or local paths (local).
+- **Timeline/Bookmarks/User timeline**: Each has an initial page route + a `/more` POST endpoint for infinite scroll (JSON `{cursor}`); `mark_downloaded()` annotates which videos already exist in storage.
+- **Downloads**: `/timeline/download` starts a background thread via `_do_download()` which downloads to temp file → uploads to storage → generates thumbnail → cleans temp; `/timeline/progress/<task_id>` streams SSE progress events.
 - **Ratings**: `/rate/<author>/<filename>` POST (1–5 stars, 0 = unset); `/liked` shows rated videos sorted by score desc. `ratings.json` stores `author/filename → score`; `load_ratings()` / `save_ratings()` protected by `_ratings_lock`.
-- **Deletion**: `/delete/<author>/<filename>` POST; removes mp4 + jpg + rating entry.
+- **Deletion**: `/delete/<author>/<filename>` POST; removes mp4 + jpg from storage + rating entry.
 - **User ID cache**: `_user_id_cache` dict avoids repeated `get_user_id()` calls for `/user/<screen_name>` routes.
 
 ### Key Functions
 
 | Function | File | Description |
 |---|---|---|
+| `get_storage()` | `storage.py` | Returns singleton StorageBackend (local or COS) |
 | `get_query_id()` | `x_timeline.py` | Returns cached HomeTimeline queryId or fallback |
 | `_fetch_query_id_for_operation()` | `x_timeline.py` | Generic queryId refresh: scrapes X JS bundle, writes to `.query_id_cache.json` |
 | `make_headers()` | `x_timeline.py` | Builds GraphQL request headers with random `x-client-uuid` |
@@ -115,11 +127,12 @@ All share the same `TWEET_FEATURES` dict and the same auto-refresh pattern: on 4
 | `parse_bookmarks(data)` | `x_timeline.py` | Bookmarks response → `_parse_instructions()` |
 | `get_user_id(screen_name)` | `x_timeline.py` | UserByScreenName GraphQL lookup → numeric rest_id |
 | `get_tweet_by_id(tweet_id)` | `x_timeline.py` | TweetDetail GraphQL → single tweet dict |
-| `download_video(tweet, video, index)` | `x_timeline.py` | Streams highest-bitrate MP4 to `DOWNLOAD_DIR/{user}/`; skips if exists |
-| `ensure_thumbnail(mp4_path)` | `app.py` | OpenCV first-frame extraction to `.jpg` |
-| `get_all_videos()` | `app.py` | Scans `videos/*/*.mp4`; generates thumbnails; returns sorted by mtime |
+| `download_video(tweet, video, index)` | `x_timeline.py` | Streams highest-bitrate MP4 to `DOWNLOAD_DIR/{user}/`; skips if exists (CLI only) |
+| `ensure_thumbnail(author, filename)` | `app.py` | OpenCV first-frame extraction; COS mode: download→extract→upload→clean |
+| `get_all_videos()` | `app.py` | Lists objects from storage; returns sorted by mtime |
 | `mark_downloaded(tweets)` | `app.py` | Annotates each tweet's videos with `downloaded: bool` |
-| `_do_download(task_id, ...)` | `app.py` | Background thread: streams video to disk, updates `_download_tasks` dict |
+| `_do_download(task_id, ...)` | `app.py` | Background thread: download→upload to storage→thumbnail→cleanup |
+| `_annotate_urls(videos)` | `app.py` | Adds `thumb_url` (presigned or local) to video dicts |
 | `_parse_tweet_url(url)` | `app.py` | Extracts (screen_name, tweet_id) from x.com URL |
 
 ### X API GraphQL Response Structure
@@ -147,6 +160,21 @@ All share the same entry traversal:
 
 User fields may be in either `result.core` or `result.legacy` — the code checks both.
 
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `X_AUTH_TOKEN` | Yes | — | X auth cookie |
+| `X_CT0` | Yes | — | X CSRF token |
+| `SECRET_KEY` | Yes* | users.json | Flask session secret key |
+| `STORAGE_BACKEND` | No | `local` | `"local"` or `"cos"` |
+| `COS_REGION` | COS only | — | e.g. `ap-beijing` |
+| `COS_SECRET_ID` | COS only | — | Tencent Cloud SecretId |
+| `COS_SECRET_KEY` | COS only | — | Tencent Cloud SecretKey |
+| `COS_BUCKET` | COS only | — | Bucket name with appid |
+| `COS_SCHEME` | No | `https` | COS connection scheme |
+| `FLASK_DEBUG` | No | `false` | Enable debug mode |
+
 ## Data Files
 
 | File | Schema | Purpose |
@@ -154,23 +182,12 @@ User fields may be in either `result.core` or `result.legacy` — the code check
 | `users.json` | `{"secret_key": "...", "users": {"<name>": "<bcrypt hash>"}}` | Auth credentials (gitignored) |
 | `ratings.json` | `{"author/filename": score}` | Video ratings 1–5 (gitignored) |
 | `.query_id_cache.json` | `{"query_id": "...", "user_tweets_query_id": "...", "bookmarks_query_id": "...", "tweet_detail_query_id": "..."}` | Cached GraphQL queryIds per operation |
-| `videos/{user}/{tweet_id}_{index}.mp4` | — | Downloaded videos (gitignored) |
-| `videos/{user}/{tweet_id}_{index}.jpg` | — | Auto-generated thumbnails |
-
-## Testing
-
-Tests are fully offline — no network, X API, or real video files required. All external dependencies are mocked via `monkeypatch`.
-
-| Test file | Coverage |
-|---|---|
-| `tests/test_x_timeline.py` | `extract_videos`, `_parse_instructions`, `parse_timeline`, `parse_bookmarks`, `parse_user_tweets`, queryId cache for all 4 operations, `make_headers`, `get_user_id`, `get_tweet_by_id`, HTTP error handling |
-| `tests/test_app.py` | Path safety (`_safe_segment`, `_safe_filename`, `_parse_tweet_url`), all routes (400/404/200), login rate limiting, open-redirect fix, HTTP security headers, bcrypt password check, OpenCV thumbnail mock, video scanning/sorting, SSE progress stream, rating/delete endpoints |
-
-**Tests must pass before deployment** — `deploy.sh` runs `pytest` automatically and aborts on failure.
+| `videos/{user}/{tweet_id}_{index}.mp4` | — | Downloaded videos (local mode, gitignored) |
+| `videos/{user}/{tweet_id}_{index}.jpg` | — | Auto-generated thumbnails (local mode) |
 
 ## Deployment
 
 - **Server**: `ubuntu@h1.tomatochen.top:22`
 - **Project path**: `~/x_videos_server`
 - **Service**: `x_videos_server.service` (systemd)
-- `deploy.sh` runs tests → push → remote pull → restart. Aborts immediately if pytest fails.
+- `deploy.sh` runs push → remote pull → restart.

@@ -260,7 +260,7 @@ class CosStorage(StorageBackend):
         return self.client.get_presigned_download_url(
             Bucket=self.bucket,
             Key=cos_key,
-            Expires=expires,
+            Expired=expires,
         )
 
     def get_size(self, key: str) -> int:

@@ -570,6 +570,9 @@ def liked():
     if not ratings:
         return render_template("liked.html", videos=[])
     store = get_storage()
+    # 一次 list_objects 拿到所有对象，避免逐个 API 调用
+    all_objects = {o["key"]: o for o in store.list_objects()}
+
     videos = []
     for key, score in ratings.items():
         # key 格式: author/filename
@@ -580,30 +583,23 @@ def liked():
         if not _safe_segment(author) or not _safe_filename(filename):
             continue
         mp4_key = f"{author}/{filename}"
-        if not store.exists(mp4_key):
+        if mp4_key not in all_objects:
             continue
         jpg_key = f"{author}/{Path(filename).stem}.jpg"
-        has_thumb = store.exists(jpg_key)
+        has_thumb = jpg_key in all_objects
         stem = Path(filename).stem
         p = stem.rsplit("_", 1)
         tweet_id = p[0] if len(p) == 2 else stem
 
-        # 获取 mtime
-        try:
-            obj_info = None
-            for o in store.list_objects(f"{author}/"):
-                if o["key"] == mp4_key:
-                    obj_info = o
-                    break
-            mtime = obj_info["last_modified"] if obj_info else 0
-            if isinstance(mtime, str):
-                try:
-                    dt = datetime.datetime.fromisoformat(mtime.replace("Z", "+00:00"))
-                    mtime = dt.timestamp()
-                except Exception:
-                    mtime = 0
-        except Exception:
-            mtime = 0
+        # 从缓存的对象信息中获取 mtime
+        obj_info = all_objects[mp4_key]
+        mtime = obj_info.get("last_modified", 0)
+        if isinstance(mtime, str):
+            try:
+                dt = datetime.datetime.fromisoformat(mtime.replace("Z", "+00:00"))
+                mtime = dt.timestamp()
+            except Exception:
+                mtime = 0
 
         thumb_url = store.get_url(jpg_key, expires=300) if has_thumb else None
 

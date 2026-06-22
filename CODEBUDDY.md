@@ -191,3 +191,17 @@ User fields may be in either `result.core` or `result.legacy` — the code check
 - **Project path**: `~/x_videos_server`
 - **Service**: `x_videos_server.service` (systemd)
 - `deploy.sh` runs push → remote pull → restart.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`github.com/dotomato/x_videos_server`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Uses default label vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context repo — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

@@ -70,8 +70,26 @@ class StorageBackend(ABC):
         """获取指定前缀下所有对象的总大小（字节）。"""
 
     @abstractmethod
+    def get_file(self, key: str) -> bytes:
+        """下载对象内容为字节，供缩略图生成等场景使用。"""
+
+    @abstractmethod
+    def put_file(self, key: str, data: bytes, content_type: str = "") -> None:
+        """将字节数据写入对象（内部使用，等同于 upload_bytes）。"""
+
+    @abstractmethod
     def get_disk_free(self) -> str:
         """获取存储剩余空间的可读字符串。COS 返回 '∞'。"""
+
+    def url_requires_redirect(self) -> bool:
+        """返回 True 表示 get_url() 产生外部 URL（需要 HTTP redirect）。
+        Local 返回 False（Flask 直接 serve），COS 返回 True（预签名 URL）。
+        """
+        return False
+
+    def csp_media_domain(self) -> str:
+        """返回需要添加到 CSP img-src/media-src 的域名，不需要则返回空字符串。"""
+        return ""
 
 
 # ─── 本地文件系统实现 ────────────────────────────────────────────────────────
@@ -151,6 +169,12 @@ class LocalStorage(StorageBackend):
         if free >= 1 << 20:
             return f"{free / (1 << 20):.1f} MiB"
         return f"{free} B"
+
+    def get_file(self, key: str) -> bytes:
+        return self._full_path(key).read_bytes()
+
+    def put_file(self, key: str, data: bytes, content_type: str = "") -> None:
+        self.upload_bytes(key, data, content_type)
 
 
 # ─── 腾讯云 COS 实现 ────────────────────────────────────────────────────────
@@ -278,6 +302,25 @@ class CosStorage(StorageBackend):
 
     def get_disk_free(self) -> str:
         return "∞"
+
+    def url_requires_redirect(self) -> bool:
+        return True
+
+    def csp_media_domain(self) -> str:
+        bucket = os.environ.get("COS_BUCKET", "")
+        region = os.environ.get("COS_REGION", "")
+        return f"{bucket}.cos.{region}.myqcloud.com"
+
+    def get_file(self, key: str) -> bytes:
+        cos_key = self._cos_key(key)
+        resp = self.client.get_object(
+            Bucket=self.bucket,
+            Key=cos_key,
+        )
+        return resp["Body"].getvalue()
+
+    def put_file(self, key: str, data: bytes, content_type: str = "") -> None:
+        self.upload_bytes(key, data, content_type)
 
 
 # ─── 工厂函数 ────────────────────────────────────────────────────────────────

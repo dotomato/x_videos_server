@@ -18,6 +18,7 @@ from pathlib import Path
 from uuid import uuid4
 from datetime import datetime, timezone
 from wcwidth import wcswidth
+from video_key import VideoKey
 
 # ─── 凭证配置（从环境变量读取，不可硬编码）────────────────────────────────────
 def _require_env(name: str) -> str:
@@ -189,7 +190,8 @@ def download_video(tweet: dict, video: dict, index: int = 0) -> Path | None:
 
     user_dir = DOWNLOAD_DIR / tweet['user']
     user_dir.mkdir(parents=True, exist_ok=True)
-    filename = user_dir / f"{tweet['id']}_{index}.mp4"
+    vk = VideoKey(tweet_id=tweet["id"], index=index)
+    filename = user_dir / vk.filename()
 
     if filename.exists():
         print(f"  已存在: {filename.name}")

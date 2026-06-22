@@ -26,7 +26,8 @@ from x_timeline import (
     get_tweet_by_id, get_bookmarks_with_cursor,
     DOWNLOAD_DIR,
 )
-from storage import get_storage, StorageBackend, CosStorage
+from storage import get_storage, StorageBackend
+from video_key import VideoKey
 
 # ─── 日志 ──────────────────────────────────────────────────────────────────────
 
@@ -48,26 +49,67 @@ def datetimeformat(ts: int) -> str:
 BASE_DIR = Path(__file__).parent
 VIDEOS_DIR = BASE_DIR / "videos"
 USERS_FILE = BASE_DIR / "users.json"
-RATINGS_FILE = BASE_DIR / "ratings.json"
 
 
 # ─── 评分数据 ─────────────────────────────────────────────────────────────────
 
-_ratings_lock = threading.Lock()
+class RatingStore:
+    """评分存储，内部持有锁，保证并发安全。
+
+    接口：
+      .get(author, filename) -> int        # 返回 0-5，0 表示未评分
+      .set(author, filename, score)        # score=0 表示取消评分
+      .all() -> dict[str, int]             # 返回全量字典（快照）
+    """
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._lock = threading.Lock()
+
+    def _load(self) -> dict:
+        if not self._path.exists():
+            return {}
+        with open(self._path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def _save(self, data: dict) -> None:
+        with open(self._path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _key(self, author: str, filename: str) -> str:
+        return f"{author}/{filename}"
+
+    def get(self, author: str, filename: str) -> int:
+        with self._lock:
+            data = self._load()
+            return int(data.get(self._key(author, filename), 0))
+
+    def set(self, author: str, filename: str, score: int) -> None:
+        if score not in range(0, 6):
+            raise ValueError(f"score 必须为 0-5，实际为 {score}")
+        with self._lock:
+            data = self._load()
+            key = self._key(author, filename)
+            if score == 0:
+                data.pop(key, None)
+            else:
+                data[key] = score
+            self._save(data)
+
+    def delete(self, author: str, filename: str) -> None:
+        """删除评分（视频被删除时调用）。"""
+        with self._lock:
+            data = self._load()
+            data.pop(self._key(author, filename), None)
+            self._save(data)
+
+    def all(self) -> dict:
+        """返回全量评分字典快照（{author/filename: score}）。"""
+        with self._lock:
+            return self._load()
 
 
-def load_ratings() -> dict:
-    """读取 ratings.json，不存在时返回空字典。"""
-    if not RATINGS_FILE.exists():
-        return {}
-    with open(RATINGS_FILE, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_ratings(data: dict) -> None:
-    """将评分数据写入 ratings.json（需在 _ratings_lock 内调用）。"""
-    with open(RATINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+_ratings = RatingStore(BASE_DIR / "ratings.json")
 
 
 # ─── 配置加载 ─────────────────────────────────────────────────────────────────
@@ -182,11 +224,7 @@ def add_security_headers(response):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     if not response.direct_passthrough:
         store = get_storage()
-        cos_domain = ""
-        if isinstance(store, CosStorage):
-            # 从 COS bucket 名称提取域名（格式: bucket-appid.cos.region.myqcloud.com）
-            import os as _os
-            cos_domain = f"{_os.environ.get('COS_BUCKET', '')}.cos.{_os.environ.get('COS_REGION', '')}.myqcloud.com"
+        cos_domain = store.csp_media_domain()
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline'; "
@@ -243,65 +281,44 @@ def _parse_tweet_url(url: str) -> tuple[str | None, str | None]:
 
 def ensure_thumbnail(author: str, filename: str) -> str | None:
     """确保缩略图存在。返回缩略图的 storage key（不含前缀）或 None。
-    对于 Local: OpenCV 截帧保存到本地。
-    对于 COS: 下载到临时文件 → OpenCV 截帧 → 上传 jpg → 清理。
+    通过 StorageBackend.get_file/put_file 统一处理 Local 和 COS，
+    不直接访问存储后端的内部实现。
     """
     store = get_storage()
     mp4_key = f"{author}/{filename}"
     jpg_key = f"{author}/{Path(filename).stem}.jpg"
 
-    # 缩略图已存在
     if store.exists(jpg_key):
         return jpg_key
 
-    if isinstance(store, CosStorage):
-        # COS: 下载到临时文件，截帧后上传
-        try:
-            tmp_dir = Path(tempfile.mkdtemp())
-            tmp_mp4 = tmp_dir / filename
-            tmp_jpg = tmp_dir / (Path(filename).stem + ".jpg")
+    try:
+        mp4_data = store.get_file(mp4_key)
+    except Exception as e:
+        logger.error("缩略图生成失败，无法读取视频: %s", e, exc_info=True)
+        return None
 
-            # 下载 mp4
-            cos_key = f"videos/{mp4_key}"
-            resp = store.client.get_object(
-                Bucket=store.bucket,
-                Key=cos_key,
-            )
-            tmp_mp4.write_bytes(resp["Body"].getvalue())
-
-            # 截帧
-            cap = cv2.VideoCapture(str(tmp_mp4))
-            ret, frame = cap.read()
-            cap.release()
-            if ret:
-                cv2.imwrite(str(tmp_jpg), frame)
-                # 上传 jpg
-                store.upload_file(jpg_key, tmp_jpg, content_type="image/jpeg")
-                # 清理
-                tmp_mp4.unlink(missing_ok=True)
-                tmp_jpg.unlink(missing_ok=True)
-                tmp_dir.rmdir()
-                return jpg_key
-            else:
-                tmp_mp4.unlink(missing_ok=True)
-                tmp_dir.rmdir()
-                return None
-        except Exception as e:
-            logger.error("COS 缩略图生成失败: %s", e, exc_info=True)
-            return None
-    else:
-        # Local: 原有逻辑
-        mp4_path = VIDEOS_DIR / mp4_key
-        jpg_path = VIDEOS_DIR / jpg_key
-        if not mp4_path.is_file():
-            return None
-        cap = cv2.VideoCapture(str(mp4_path))
+    # 将 mp4 写入临时文件供 OpenCV 读取
+    tmp_dir = Path(tempfile.mkdtemp())
+    tmp_mp4 = tmp_dir / filename
+    try:
+        tmp_mp4.write_bytes(mp4_data)
+        cap = cv2.VideoCapture(str(tmp_mp4))
         ret, frame = cap.read()
         cap.release()
-        if ret:
-            cv2.imwrite(str(jpg_path), frame)
-            return jpg_key
+        if not ret:
+            return None
+        _, jpg_bytes = cv2.imencode(".jpg", frame)
+        store.put_file(jpg_key, jpg_bytes.tobytes(), content_type="image/jpeg")
+        return jpg_key
+    except Exception as e:
+        logger.error("缩略图生成失败: %s", e, exc_info=True)
         return None
+    finally:
+        tmp_mp4.unlink(missing_ok=True)
+        try:
+            tmp_dir.rmdir()
+        except OSError:
+            pass
 
 
 # ─── 数据扫描 ─────────────────────────────────────────────────────────────────
@@ -323,10 +340,9 @@ def get_all_videos() -> list[dict]:
             continue
         author = parts_path[0]
         filename = parts_path[1]
-        stem = Path(filename).stem
-        parts = stem.rsplit("_", 1)
-        tweet_id = parts[0] if len(parts) == 2 else stem
-        index = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 0
+        vk = VideoKey.from_filename(filename)
+        tweet_id = vk.tweet_id if vk else Path(filename).stem
+        index = vk.index if vk else 0
 
         jpg_key = f"{author}/{stem}.jpg"
         has_thumb = jpg_key in jpg_objects
@@ -502,8 +518,7 @@ def play(author: str, filename: str):
     src_url = store.get_url(mp4_key, expires=3600)
     thumb_url = store.get_url(f"{author}/{jpg}", expires=300) if store.exists(f"{author}/{jpg}") else ""
     back = request.referrer or url_for("author", name=author)
-    key = f"{author}/{filename}"
-    current_score = load_ratings().get(key, 0)
+    current_score = _ratings.get(author, filename)
     return render_template("play.html", author=author, filename=filename,
                            src=src_url,
                            thumb=thumb_url,
@@ -524,12 +539,7 @@ def delete_video(author: str, filename: str):
     if store.exists(jpg_key):
         store.delete(jpg_key)
     # 同步删除评分
-    key = f"{author}/{filename}"
-    with _ratings_lock:
-        ratings = load_ratings()
-        if key in ratings:
-            del ratings[key]
-            save_ratings(ratings)
+    _ratings.delete(author, filename)
     logger.info("已删除视频: %s/%s", author, filename)
     return jsonify({"ok": True})
 
@@ -551,14 +561,7 @@ def rate_video(author: str, filename: str):
         return jsonify({"error": "invalid score"}), 400
     if score not in range(0, 6):
         return jsonify({"error": "score must be 0-5"}), 400
-    key = f"{author}/{filename}"
-    with _ratings_lock:
-        ratings = load_ratings()
-        if score == 0:
-            ratings.pop(key, None)
-        else:
-            ratings[key] = score
-        save_ratings(ratings)
+    _ratings.set(author, filename, score)
     return jsonify({"ok": True, "score": score})
 
 
@@ -566,7 +569,7 @@ def rate_video(author: str, filename: str):
 @login_required
 def liked():
     """喜欢页：按评分降序显示已评分视频（评分相同则按 mtime 降序）。"""
-    ratings = load_ratings()
+    ratings = _ratings.all()
     if not ratings:
         return render_template("liked.html", videos=[])
     store = get_storage()
@@ -587,9 +590,8 @@ def liked():
             continue
         jpg_key = f"{author}/{Path(filename).stem}.jpg"
         has_thumb = jpg_key in all_objects
-        stem = Path(filename).stem
-        p = stem.rsplit("_", 1)
-        tweet_id = p[0] if len(p) == 2 else stem
+        vk = VideoKey.from_filename(filename)
+        tweet_id = vk.tweet_id if vk else Path(filename).stem
 
         # 从缓存的对象信息中获取 mtime
         obj_info = all_objects[mp4_key]
@@ -625,8 +627,8 @@ def serve_video(author: str, filename: str):
         abort(400)
     store = get_storage()
     key = f"{author}/{filename}"
-    if isinstance(store, CosStorage):
-        # COS 模式：重定向到预签名 URL
+    if store.url_requires_redirect():
+        # 远端存储（COS 等）：重定向到预签名 URL
         url = store.get_url(key, expires=3600)
         return redirect(url)
     else:
@@ -654,8 +656,9 @@ def _set_task(task_id: str, **kwargs):
 def _do_download(task_id: str, user: str, tweet_id: str, video_url: str, video_index: int):
     """在后台线程中流式下载单个视频，实时更新进度，上传到存储后端。"""
     store = get_storage()
-    filename = f"{tweet_id}_{video_index}.mp4"
-    mp4_key = f"{user}/{filename}"
+    vk = VideoKey(tweet_id=tweet_id, index=video_index)
+    filename = vk.filename()
+    mp4_key = vk.storage_key(user)
     logger.info("[%s] 开始下载 user=%s tweet_id=%s index=%d", task_id[:8], user, tweet_id, video_index)
 
     if store.exists(mp4_key):
@@ -663,54 +666,53 @@ def _do_download(task_id: str, user: str, tweet_id: str, video_url: str, video_i
         _set_task(task_id, status="skipped", progress=1, total=1, done=True)
         return
 
-    # 下载到临时文件
     tmp_dir = Path(tempfile.mkdtemp())
     tmp_mp4 = tmp_dir / filename
 
     try:
-        with httpx.Client(timeout=120, follow_redirects=True) as client:
-            with client.stream("GET", video_url) as r:
-                logger.info("[%s] HTTP %d  Content-Length: %s", task_id[:8], r.status_code, r.headers.get("content-length", "unknown"))
-                r.raise_for_status()
-                total = int(r.headers.get("content-length", 0))
-                _set_task(task_id, status="downloading", progress=0, total=total, done=False)
-                downloaded = 0
-                with open(tmp_mp4, "wb") as f:
-                    for chunk in r.iter_bytes(chunk_size=1024 * 64):
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        _set_task(task_id, progress=downloaded, total=total)
+        # ── 1. HTTP 流式下载 ──────────────────────────────────────────────────
+        downloaded = _stream_download(task_id, video_url, tmp_mp4)
+        total = tmp_mp4.stat().st_size
 
-        logger.info("[%s] 下载完成，共 %d 字节，开始上传到存储后端", task_id[:8], downloaded)
-
-        # 上传 mp4 到存储后端
+        # ── 2. 上传 mp4 到存储后端 ────────────────────────────────────────────
         _set_task(task_id, status="uploading", progress=downloaded, total=total)
         store.upload_file(mp4_key, tmp_mp4, content_type="video/mp4")
-
-        # 生成缩略图并上传
-        cap = cv2.VideoCapture(str(tmp_mp4))
-        ret, frame = cap.read()
-        cap.release()
-        if ret:
-            tmp_jpg = tmp_dir / f"{Path(filename).stem}.jpg"
-            cv2.imwrite(str(tmp_jpg), frame)
-            jpg_key = f"{user}/{Path(filename).stem}.jpg"
-            store.upload_file(jpg_key, tmp_jpg, content_type="image/jpeg")
-            tmp_jpg.unlink(missing_ok=True)
-
-        # 清理临时文件
-        tmp_mp4.unlink(missing_ok=True)
-        tmp_dir.rmdir()
-
         logger.info("[%s] 上传完成: %s", task_id[:8], mp4_key)
-        _set_task(task_id, status="done", progress=total or 1, total=total or 1, done=True)
+
+        # ── 3. 生成缩略图（委托给 ensure_thumbnail，通过存储接缝操作）────────
+        _set_task(task_id, status="thumbnail")
+        ensure_thumbnail(user, filename)
+
+        _set_task(task_id, status="done", progress=total, total=total, done=True)
     except Exception as e:
         logger.error("[%s] 下载失败: %s", task_id[:8], e, exc_info=True)
-        # 清理临时文件
-        if tmp_mp4.exists():
-            tmp_mp4.unlink(missing_ok=True)
-        tmp_dir.rmdir(missing_ok=True)
         _set_task(task_id, status="error", message=str(e), done=True)
+    finally:
+        # 统一清理临时文件，无论成功或失败
+        tmp_mp4.unlink(missing_ok=True)
+        try:
+            tmp_dir.rmdir()
+        except OSError:
+            pass
+
+
+def _stream_download(task_id: str, video_url: str, dest: Path) -> int:
+    """将视频 URL 流式下载到 dest，实时更新任务进度。返回下载字节数。"""
+    with httpx.Client(timeout=120, follow_redirects=True) as client:
+        with client.stream("GET", video_url) as r:
+            logger.info("[%s] HTTP %d  Content-Length: %s",
+                        task_id[:8], r.status_code, r.headers.get("content-length", "unknown"))
+            r.raise_for_status()
+            total = int(r.headers.get("content-length", 0))
+            _set_task(task_id, status="downloading", progress=0, total=total, done=False)
+            downloaded = 0
+            with open(dest, "wb") as f:
+                for chunk in r.iter_bytes(chunk_size=1024 * 64):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    _set_task(task_id, progress=downloaded, total=total)
+    logger.info("[%s] 下载完成，共 %d 字节", task_id[:8], downloaded)
+    return downloaded
 
 
 def mark_downloaded(tweets: list[dict]) -> list[dict]:
@@ -718,7 +720,7 @@ def mark_downloaded(tweets: list[dict]) -> list[dict]:
     store = get_storage()
     for t in tweets:
         for i, v in enumerate(t.get("videos", [])):
-            key = f"{t['user']}/{t['id']}_{i}.mp4"
+            key = VideoKey(tweet_id=t["id"], index=i).storage_key(t["user"])
             v["downloaded"] = store.exists(key)
     return tweets
 

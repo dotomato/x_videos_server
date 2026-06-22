@@ -344,7 +344,7 @@ def get_all_videos() -> list[dict]:
         tweet_id = vk.tweet_id if vk else Path(filename).stem
         index = vk.index if vk else 0
 
-        jpg_key = f"{author}/{stem}.jpg"
+        jpg_key = f"{author}/{Path(filename).stem}.jpg"
         has_thumb = jpg_key in jpg_objects
 
         # 解析 mtime

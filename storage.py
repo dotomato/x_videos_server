@@ -317,7 +317,8 @@ class CosStorage(StorageBackend):
             Bucket=self.bucket,
             Key=cos_key,
         )
-        return resp["Body"].getvalue()
+        # StreamBody: read raw stream to bytes
+        return resp["Body"].get_raw_stream().read()
 
     def put_file(self, key: str, data: bytes, content_type: str = "") -> None:
         self.upload_bytes(key, data, content_type)
